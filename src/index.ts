@@ -96,6 +96,7 @@ export {
 
 export {
   extractRequestedRouting,
+  readRequestedRouting,
   isRoutingHonored,
   normalizeGenerationRecord,
   provenanceAttributes,

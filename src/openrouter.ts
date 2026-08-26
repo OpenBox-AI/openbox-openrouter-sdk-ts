@@ -85,7 +85,7 @@ import {
   runWithActivityResolver,
   unregisterActivity,
 } from './span_processor';
-import type { RoutingProvenance } from './provenance';
+import { readRequestedRouting, type RequestedRouting, type RoutingProvenance } from './provenance';
 import { hexId, safeSerialize } from './types';
 import { enforceVerdict, GovernanceHaltError, unwrapGovernanceError } from './verdict';
 
@@ -153,6 +153,13 @@ interface CallModelRequestLike {
  */
 class RunState {
   readonly turn: Turn;
+  /**
+   * Routing constraint read off the caller's request object, once per run.
+   *
+   * The wire body is the better source and is preferred when available; this is
+   * the fallback for the common case where `captureRequestObjectBody` is off.
+   */
+  declaredRouting: RequestedRouting | null = null;
   /** Activity id of the currently-open llm_call, if any. */
   llmActivityId: string | null = null;
   llmStartedAtMs = 0;
@@ -284,6 +291,20 @@ export interface OpenBoxGovernance {
    * await it — the counterpart to opening the run.
    */
   close(): Promise<void>;
+
+  /**
+   * What the routing provenance for the finished runs actually said.
+   *
+   * The same summary that rides on `WorkflowCompleted.extra` — who served each
+   * call, from which region, at what cost, and whether a stated allowlist held.
+   * Exposed because a developer who wants to show or assert on this should not
+   * have to read it back out of the dashboard.
+   *
+   * Populated as each run finalizes, so read it after `close()`. Empty when no
+   * provenance was collected (attestation off, no API key, or records that
+   * never arrived).
+   */
+  routingSummaries(): ReadonlyArray<Record<string, unknown>>;
 }
 
 /**
@@ -315,6 +336,8 @@ export function createOpenBoxGovernance(
   // concurrent runs push/pop, and the most recent open run wins — see
   // `currentRun()`.
   const openRuns: RunState[] = [];
+  /** Routing summaries of finalized runs, surfaced via `routingSummaries()`. */
+  const collectedRoutingSummaries: Array<Record<string, unknown>> = [];
   // Carries the active run through the engine and through result consumption,
   // so concurrent runs on one instance never cross-attribute their tools.
   const runScope = new AsyncLocalStorage<RunState>();
@@ -484,7 +507,7 @@ export function createOpenBoxGovernance(
     // awaited: OpenRouter writes the generation record a moment after the
     // response, and no turn should wait on evidence nobody is blocked on. The
     // run drains it before closing (see finalizeRun).
-    beginRoutingAttestation(activityId);
+    beginRoutingAttestation(activityId, run.declaredRouting);
 
     await unregisterActivity(activityId);
 
@@ -609,8 +632,11 @@ export function createOpenBoxGovernance(
       messages: run.finalText != null ? [{ role: 'assistant', content: run.finalText }] : [],
     };
 
+    const summary = routingSummary(routing);
+    if (summary != null) collectedRoutingSummaries.push(summary);
+
     await mw
-      .afterAgent(run.turn, state, error, routingSummary(routing))
+      .afterAgent(run.turn, state, error, summary)
       .catch(() => undefined);
   }
 
@@ -1000,6 +1026,9 @@ export function createOpenBoxGovernance(
     // back to `fn` is re-narrowed to the caller's own `TRequest`.
     const request = rawRequest as unknown as CallModelRequestLike;
     const messages = normalizeInput(request.input);
+    // Read once here: `provider.only` lives on the object the caller passed,
+    // and reading it needs neither a body capture nor a Request clone.
+    const declaredRouting = readRequestedRouting(request);
     const state = { messages };
 
     // WorkflowStarted + SignalReceived, enforced. Throws on block/halt.
@@ -1019,6 +1048,7 @@ export function createOpenBoxGovernance(
     }
 
     const run = new RunState(turn, extractPromptText(state.messages), wrappedToolNames);
+    run.declaredRouting = declaredRouting;
     openRuns.push(run);
 
     try {
@@ -1093,7 +1123,13 @@ export function createOpenBoxGovernance(
     openRuns.length = 0;
   }
 
-  return { middleware: mw, tools, callModel: governedCallModel, close };
+  return {
+    middleware: mw,
+    tools,
+    callModel: governedCallModel,
+    close,
+    routingSummaries: () => collectedRoutingSummaries,
+  };
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────

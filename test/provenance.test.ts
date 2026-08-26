@@ -18,6 +18,7 @@ import {
   isRoutingHonored,
   normalizeGenerationRecord,
   provenanceAttributes,
+  readRequestedRouting,
 } from '../src/provenance';
 
 describe('requested routing', () => {
@@ -137,4 +138,60 @@ describe('attested attributes', () => {
       },
     };
   }
+});
+
+// ── readRequestedRouting: the object-based path ──────────────────────────────
+//
+// Added because the body-based reader is only fed when
+// `captureRequestObjectBody` is on, and it defaults to OFF (cloning a Request
+// broke the OpenRouter client's retries). With it off, a constrained call was
+// recorded as `unconstrained`: the constraint was sent and obeyed, and the
+// evidence disagreed. Reading the caller's request object needs no capture.
+
+describe('readRequestedRouting', () => {
+  it('reads provider.only off the request object', () => {
+    const routing = readRequestedRouting({
+      model: 'openai/gpt-4o-mini',
+      provider: { only: ['openai'], allow_fallbacks: false },
+    });
+    expect(routing).toEqual({ only: ['openai'], allowFallbacks: false });
+  });
+
+  it('reads order and models too', () => {
+    const routing = readRequestedRouting({
+      provider: { order: ['azure', 'openai'] },
+      models: ['openai/gpt-4o-mini', 'anthropic/claude-3-haiku'],
+    });
+    expect(routing?.order).toEqual(['azure', 'openai']);
+    expect(routing?.models).toHaveLength(2);
+  });
+
+  it('returns null when the request states no routing at all', () => {
+    expect(readRequestedRouting({ model: 'openai/gpt-4o-mini' })).toBeNull();
+  });
+
+  it('tolerates junk without throwing', () => {
+    expect(readRequestedRouting(null)).toBeNull();
+    expect(readRequestedRouting('nope')).toBeNull();
+    expect(readRequestedRouting({ provider: 'openai' })).toBeNull();
+    expect(readRequestedRouting({ provider: { only: 'openai' } })).toBeNull();
+  });
+
+  it('agrees with the body reader on the same content', () => {
+    const request = { provider: { only: ['openai'], allow_fallbacks: false } };
+    expect(readRequestedRouting(request)).toEqual(
+      extractRequestedRouting(JSON.stringify(request)),
+    );
+  });
+
+  it('makes the honored check decidable without a captured body', () => {
+    // The whole point: a constraint the body reader cannot see must still
+    // produce a true/false verdict rather than null.
+    const declared = readRequestedRouting({ provider: { only: ['openai'] } });
+    expect(isRoutingHonored('OpenAI', declared)).toBe(true);
+    expect(isRoutingHonored('Anthropic', declared)).toBe(false);
+    // And with nothing captured and nothing declared it stays null — an
+    // unconstrained call must never be reported as a pass.
+    expect(isRoutingHonored('OpenAI', extractRequestedRouting(null))).toBeNull();
+  });
 });

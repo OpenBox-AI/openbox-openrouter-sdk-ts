@@ -8,7 +8,8 @@
     "agent": "tsx src/agent.ts",
     "agent:stream": "tsx src/agent.ts --stream",
     "typecheck": "tsc --noEmit",
-    "ui": "tsx src/server.ts"
+    "ui": "tsx src/server.ts",
+    "demo:routing": "tsx src/routing-demo.ts"
   },
   "dependencies": {
     "@openrouter/agent": "^0.11.0",
