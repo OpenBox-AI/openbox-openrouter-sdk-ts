@@ -1333,14 +1333,26 @@ function recordRoutingCandidate(
  * hashed into the session's Merkle tree, so the provenance is sealed under the
  * signed session root rather than being a log line someone could edit.
  */
-export function beginRoutingAttestation(activityId: string): void {
+export function beginRoutingAttestation(
+  activityId: string,
+  /**
+   * Routing read off the caller's request OBJECT, used when the wire body was
+   * not captured. `captureRequestObjectBody` is off by default (cloning a
+   * `Request` broke the OpenRouter client's retries), so without this the
+   * honored comparison is inert for exactly the client this SDK governs.
+   */
+  declaredRouting?: RequestedRouting | null,
+): void {
   const pending = _pendingRouting.get(activityId);
   if (pending == null) return;
   _pendingRouting.delete(activityId);
   if (!routingAttestationEnabled()) return;
 
   const job = (async (): Promise<RoutingProvenance | null> => {
-    const record = await fetchGenerationRecord(pending.generationId, pending.requested, {
+    // Body-derived wins when present — it is what actually went over the wire.
+    // The declared constraint is the fallback, not an override.
+    const requested = pending.requested ?? declaredRouting ?? null;
+    const record = await fetchGenerationRecord(pending.generationId, requested, {
       apiKey: _routingAttestation.apiKey!,
       baseUrl: _routingAttestation.baseUrl,
       // Our own lookup must never be captured as one of the agent's spans.

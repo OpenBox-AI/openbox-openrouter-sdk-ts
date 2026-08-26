@@ -28,6 +28,34 @@ npm run agent -- "Where is order A-1001?"            # your own question
 npm run agent:stream                                 # stream the answer
 ```
 
+## Routing integrity showcase
+
+```bash
+npm run demo:routing
+```
+
+Four real runs that populate the **Routing Integrity** panel in the dashboard:
+one with no provider allowlist, one pinned to `openai`, one pinned to `azure`
+(the same model, a different real upstream), and one pinned to a provider that
+cannot serve the model — which OpenRouter refuses server-side, so the promise
+holds by failing rather than by being broken.
+
+Then look at it: **http://localhost:3233/routing-integrity**
+
+Any single run can carry a constraint of its own:
+
+```bash
+OPENROUTER_PROVIDER_ONLY=openai npm run agent -- "Where is order A-1001?"
+OPENROUTER_PROVIDER_ONLY=openai,azure OPENROUTER_ALLOW_FALLBACKS=false npm run agent
+```
+
+`OPENROUTER_PROVIDER_ONLY` is what makes a call *checkable*: without it the
+provenance still records who served the prompt, but nothing was promised, so the
+call is reported as "unconstrained" rather than as a pass. Setting it also turns
+on `captureRequestObjectBody`, which the honored comparison needs — it reads
+`provider.only` off the outbound request body, and the OpenRouter client passes a
+`Request` whose body is otherwise not captured.
+
 ## What it does
 
 Three tools, chosen to exercise different governance paths:

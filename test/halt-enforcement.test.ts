@@ -44,9 +44,12 @@ class Recorder implements OpenBoxTransport {
     );
   }
   closings() {
-    return this.events.filter((e) => e.event_type === 'WorkflowCompleted') as unknown as Array<
-      Record<string, unknown>
-    >;
+    // A run that ended in an error closes as WorkflowFailed — Core derives
+    // `sessions.status` from the event type, so a failed run reported as
+    // WorkflowCompleted was recorded as a clean success.
+    return this.events.filter(
+      (e) => e.event_type === 'WorkflowCompleted' || e.event_type === 'WorkflowFailed',
+    ) as unknown as Array<Record<string, unknown>>;
   }
 }
 
@@ -181,6 +184,7 @@ describe('a halted run cannot hand the caller an answer', () => {
     await openbox.close();
 
     const closing = transport.closings().at(-1);
+    expect(closing?.event_type).toBe('WorkflowFailed');
     expect(closing?.status).toBe('failed');
     expect(JSON.stringify(closing?.error)).toContain('halts the run');
   });

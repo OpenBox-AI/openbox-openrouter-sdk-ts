@@ -97,8 +97,25 @@ export function extractRequestedRouting(requestBody: string | null): RequestedRo
   } catch {
     return null;
   }
-  if (parsed == null || typeof parsed !== 'object') return null;
-  const body = parsed as Record<string, unknown>;
+  return readRequestedRouting(parsed);
+}
+
+/**
+ * Read the routing constraints straight off the request OBJECT.
+ *
+ * The body-based reader above only sees a request whose body was captured, and
+ * capture is opt-in for `Request` objects — cloning one destabilised the
+ * OpenRouter client's retry path, so `captureRequestObjectBody` defaults to
+ * false. That left the honored comparison silently inert for the very client
+ * this SDK exists to govern: the constraint was sent and obeyed, and the
+ * evidence recorded `unconstrained`.
+ *
+ * Reading the object the caller handed to `callModel` needs no clone and no
+ * capture, so it works regardless of that setting.
+ */
+export function readRequestedRouting(request: unknown): RequestedRouting | null {
+  if (request == null || typeof request !== 'object') return null;
+  const body = request as Record<string, unknown>;
 
   const routing: RequestedRouting = {};
   const provider = body.provider;
