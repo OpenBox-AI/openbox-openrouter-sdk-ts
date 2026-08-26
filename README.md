@@ -195,6 +195,83 @@ non-streaming run recorded six.
 
 ---
 
+## Routing provenance
+
+OpenRouter makes its users two promises that pull against each other. One is
+trust — *"ensure prompts only go to the models and providers you trust"*. The
+other is reliability — 80+ providers with automatic fallback when one is down.
+Together they mean the provider that serves any given call is chosen at request
+time, per call, and **the caller cannot see which one it was**. The response
+does not say. For anyone with a data-residency clause, a provider allowlist, or
+an auditor, "we routed it correctly" is a claim they have to take on faith.
+
+OpenRouter does publish the answer — `GET /api/v1/generation?id=<gen-id>`
+returns the provider that served the call, the region it ran in, what it cost,
+whether your own key was used, and the fallback attempts that preceded it. This
+SDK reads that record for every governed model call, which lets OpenBox do
+three things with it that a gateway alone cannot:
+
+**Enforce it.** The record arrives as a span, so a policy decides on it:
+
+```rego
+trusted := {"anthropic"}
+
+untrusted contains provider if {
+	some span in input.spans
+	provider := lower(span.attributes["gen_ai.upstream.provider"])
+	not provider in trusted
+}
+
+result := {
+	"decision": "STOP",
+	"reason": sprintf("prompt was served by an untrusted provider: %v", [concat(", ", untrusted)]),
+} if { count(untrusted) > 0 }
+```
+
+Run an agent under that policy and the session ends `halted`, with the reason
+recorded against the model call that broke the rule.
+
+**Attest it.** The record travels in span *attributes*, which is what Core
+hashes into the session's Merkle tree — so it is sealed under the signed
+session root. "Every prompt in this session was served by an approved provider
+in an approved region" stops being a log line someone could edit and becomes a
+statement backed by a signature.
+
+**Check the promise.** The routing the caller *asked for* travels with the
+record, so `provider.only: ["anthropic"]` versus what actually served the call
+is a comparison anyone can make — `openbox.routing.honored` is the answer.
+
+What lands on each model call:
+
+| Attribute | |
+|---|---|
+| `gen_ai.upstream.provider` | who actually served it |
+| `gen_ai.upstream.data_region` | where it ran |
+| `gen_ai.usage.total_cost` · `…upstream_cost` | what it cost |
+| `gen_ai.upstream.is_byok` | whether your key was used |
+| `gen_ai.routing.providers_tried` · `…fallback_attempts` | the failover trail |
+| `openbox.routing.requested_only` · `…honored` | what was asked for, and whether it held |
+| `gen_ai.generation.id` | OpenRouter's receipt number, so any claim can be re-checked at source |
+
+### Timing, and what it costs you
+
+The generation record is written shortly *after* the response, not with it — a
+lookup at turn close returns 404. So collection runs in the background with
+backoff and is drained before the session closes: it never delays an answer,
+and it still lands inside the session (and therefore inside the attestation).
+A run whose last turn finishes at once may take a few extra seconds to close
+while the last record is fetched.
+
+It needs an OpenRouter key (`openrouterApiKey`, or `OPENROUTER_API_KEY`) and is
+inert without one. Turn it off with `attestRouting: false` or
+`OPENBOX_ATTEST_ROUTING=false`.
+
+**One honest boundary:** because the record exists only after the call, this is
+evidence and session-level enforcement, not a pre-flight gate. A prompt already
+sent cannot be unsent. What a policy can do is refuse the *next* one and halt
+the session — which is exactly what you want when the router silently fails
+over to a provider your contract excludes.
+
 ## What governance costs
 
 Every evaluation is a round-trip to Core, which starts a Temporal workflow and

@@ -76,6 +76,15 @@ export interface OpenBoxOpenRouterOptions extends Partial<OpenBoxCredentials> {
    * old strictly-serial behaviour.
    */
   spanConcurrency?: number;
+  /**
+   * Read OpenRouter's generation record for every model call, so the provider
+   * that actually served it — and the region, cost and failover trail — is
+   * governed and attested rather than assumed. Needs an OpenRouter key
+   * (`openrouterApiKey`, or `OPENROUTER_API_KEY`); inert without one.
+   */
+  attestRouting?: boolean;
+  /** Key used to read generation records. Defaults to `OPENROUTER_API_KEY`. */
+  openrouterApiKey?: string;
   instrumentFileIo?: boolean;
   /** Back-compat boolean — true enables all drivers in ALL_DATABASE_DRIVERS. */
   instrumentDatabases?: boolean;
@@ -111,6 +120,8 @@ export interface GovernanceConfig {
   instrumentHttp: boolean;
   captureRequestObjectBody: boolean;
   spanConcurrency: number;
+  attestRouting: boolean;
+  openrouterApiKey: string | null;
   instrumentFileIo: boolean;
   instrumentDatabases: boolean;
   databases: Set<DatabaseDriverName>;
@@ -166,6 +177,10 @@ export function mergeConfig(opts: OpenBoxOpenRouterOptions): GovernanceConfig {
     captureRequestObjectBody: opts.captureRequestObjectBody ?? false,
     spanConcurrency:
       opts.spanConcurrency ?? envNumber('OPENBOX_SPAN_CONCURRENCY') ?? 4,
+    attestRouting:
+      opts.attestRouting ?? process.env.OPENBOX_ATTEST_ROUTING !== 'false',
+    openrouterApiKey:
+      opts.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? null,
     instrumentFileIo: opts.instrumentFileIo ?? false,
     instrumentDatabases: opts.instrumentDatabases ?? true,
     databases,

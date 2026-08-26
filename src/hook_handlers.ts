@@ -124,6 +124,7 @@ export async function handleAfterAgent(
   turn: Turn,
   state: AgentState,
   failedWith?: Error,
+  extra?: Record<string, unknown>,
 ): Promise<GovernanceVerdictResponse | null> {
   if (!mw._config.sendChainEndEvent) return null;
 
@@ -151,6 +152,7 @@ export async function handleAfterAgent(
     workflow_output: output,
     status: failedWith ? 'failed' : 'completed',
     ...(failedWith ? { error: toErrorInfo(failedWith) } : {}),
+    ...(extra != null ? { extra } : {}),
   }));
 
   // Clean up any lingering activity registrations for this workflow.

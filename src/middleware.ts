@@ -32,6 +32,7 @@ import {
 import {
   addIgnoredPrefix,
   setCaptureRequestObjectBody,
+  setRoutingAttestation,
   setSpanConcurrency,
   setupSpanProcessorInstrumentation,
 } from './span_processor';
@@ -77,6 +78,10 @@ export class OpenBoxOpenRouterMiddleware {
     addIgnoredPrefix(DEFAULT_OPENBOX_URL);
     setCaptureRequestObjectBody(this._config.captureRequestObjectBody);
     setSpanConcurrency(this._config.spanConcurrency);
+    setRoutingAttestation({
+      enabled: this._config.attestRouting,
+      apiKey: this._config.openrouterApiKey,
+    });
     setupSpanProcessorInstrumentation({ http: this._config.instrumentHttp });
 
     setupNodeHookInstrumentation({
@@ -101,8 +106,10 @@ export class OpenBoxOpenRouterMiddleware {
     turn: Turn,
     state: AgentState,
     failedWith?: Error,
+    /** Session-level routing evidence, carried on the closing event. */
+    extra?: Record<string, unknown>,
   ): Promise<GovernanceVerdictResponse | null> {
-    return handleAfterAgent(this, turn, state, failedWith);
+    return handleAfterAgent(this, turn, state, failedWith, extra);
   }
 
   /**

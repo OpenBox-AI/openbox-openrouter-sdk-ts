@@ -93,3 +93,13 @@ export {
   type OpenBoxGovernanceEvent,
   type VerdictArm,
 } from './types';
+
+export {
+  extractRequestedRouting,
+  isRoutingHonored,
+  normalizeGenerationRecord,
+  provenanceAttributes,
+  type ProviderAttempt,
+  type RequestedRouting,
+  type RoutingProvenance,
+} from './provenance';

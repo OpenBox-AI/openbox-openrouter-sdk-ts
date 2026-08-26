@@ -19,6 +19,13 @@
 
 import { AsyncLocalStorage } from 'async_hooks';
 import { setTimeout as _st } from 'timers';
+import {
+  extractRequestedRouting,
+  fetchGenerationRecord,
+  provenanceAttributes,
+  type RequestedRouting,
+  type RoutingProvenance,
+} from './provenance';
 
 import {
   GovernanceAuthError,
@@ -225,7 +232,13 @@ export function buildHttpSpanData(opts: {
   // an ordinary HTTP tool's response is not an assistant message.
   if (genAiSystem != null) {
     if (opts.stage === 'started') _llmSpanPending.add(opts.activityId);
-    else recordAssistantText(opts.activityId, normalizedResponseBody);
+    else {
+      recordAssistantText(opts.activityId, normalizedResponseBody);
+      // The generation id is the receipt number for this call, and the request
+      // body carries what the caller asked of the router. Both are only
+      // available here, together.
+      recordRoutingCandidate(opts.activityId, normalizedResponseBody, opts.requestBody);
+    }
   }
 
   return {
@@ -359,7 +372,9 @@ function isDuplicateSpan(activityId: string, spanData: Record<string, unknown>):
       ? [spanData.http_method, spanData.http_url, spanData.http_status_code ?? '']
       : hookType === 'db_query'
         ? [spanData.db_system, spanData.db_statement, spanData.rowcount ?? '']
-        : [spanData.file_path, spanData.file_operation];
+        : hookType === 'llm_routing'
+          ? [(spanData.attributes as Record<string, unknown> | undefined)?.['gen_ai.generation.id']]
+          : [spanData.file_path, spanData.file_operation];
   const key = [activityId, spanData.stage, hookType, ...identity].join('|');
   const seenAt = _recentSpans.get(key);
   if (seenAt != null && now - seenAt <= _recentSpanTtlMs) {
@@ -1114,6 +1129,56 @@ const _assistantText = new Map<string, string>();
  * coming: with HTTP instrumentation off there is nothing to wait for.
  */
 const _llmSpanPending = new Set<string>();
+
+/**
+ * Routing provenance awaiting collection, keyed by activity.
+ *
+ * Set when a model call's completed span is built (that is where the
+ * generation id and the request's own routing constraints are both in hand),
+ * and drained by `attestRouting()` before the activity closes.
+ */
+const _pendingRouting = new Map<
+  string,
+  { generationId: string; requested: RequestedRouting | null; entry: ActiveEntry }
+>();
+
+/**
+ * Provenance collection still in flight.
+ *
+ * OpenRouter writes the generation record a moment after the response — a
+ * lookup at turn close returns 404 (measured: still 404 at +400ms). Waiting
+ * for it inline would tax every turn with a retry loop for evidence nobody is
+ * blocked on, so collection runs in the background with backoff and the run
+ * drains it before closing. That keeps the record inside the session — and so
+ * inside the session's Merkle tree — without putting it on the turn's path.
+ */
+const _routingJobs = new Set<Promise<RoutingProvenance | null>>();
+
+let _routingAttestation: { enabled: boolean; apiKey: string | null; baseUrl?: string } = {
+  enabled: true,
+  apiKey: null,
+};
+
+/**
+ * Configure routing attestation. Silently inert without an OpenRouter key —
+ * the generation record is OpenRouter's to hand over, and reading it needs
+ * the caller's own credential.
+ */
+export function setRoutingAttestation(opts: {
+  enabled?: boolean;
+  apiKey?: string | null;
+  baseUrl?: string;
+}): void {
+  _routingAttestation = {
+    enabled: opts.enabled ?? _routingAttestation.enabled,
+    apiKey: opts.apiKey ?? _routingAttestation.apiKey,
+    baseUrl: opts.baseUrl ?? _routingAttestation.baseUrl,
+  };
+}
+
+export function routingAttestationEnabled(): boolean {
+  return _routingAttestation.enabled && _routingAttestation.apiKey != null;
+}
 const _assistantWaiters = new Map<string, Array<(text: string | null) => void>>();
 
 function settleAssistantWaiters(activityId: string, text: string | null): void {
@@ -1232,6 +1297,116 @@ export function awaitAssistantText(activityId: string, capMs = 2_000): Promise<s
  * when the response body was never captured — instrumentation off, a
  * non-LLM activity, or a body we could not read.
  */
+/** Stash the generation id and requested routing for later collection. */
+function recordRoutingCandidate(
+  activityId: string,
+  responseBody: string | null,
+  requestBody: string | null,
+): void {
+  if (!routingAttestationEnabled() || responseBody == null) return;
+  let generationId: string | null = null;
+  try {
+    const parsed = JSON.parse(responseBody) as Record<string, unknown>;
+    const id = parsed.id;
+    // OpenRouter's generation ids are `gen-…`; anything else is a provider id
+    // we cannot look up.
+    if (typeof id === 'string' && id.startsWith('gen-')) generationId = id;
+  } catch {
+    return;
+  }
+  if (generationId == null) return;
+  const entry = _activeActivities.get(activityId);
+  if (entry == null) return;
+  _pendingRouting.set(activityId, {
+    generationId,
+    requested: extractRequestedRouting(requestBody),
+    entry,
+  });
+}
+
+/**
+ * Start collecting the routing provenance for an activity, in the background.
+ *
+ * Returns immediately. The span it eventually sends goes through the normal
+ * path, which means a policy evaluates it — so a call served outside an
+ * approved provider set or region can be refused — and its attributes are
+ * hashed into the session's Merkle tree, so the provenance is sealed under the
+ * signed session root rather than being a log line someone could edit.
+ */
+export function beginRoutingAttestation(activityId: string): void {
+  const pending = _pendingRouting.get(activityId);
+  if (pending == null) return;
+  _pendingRouting.delete(activityId);
+  if (!routingAttestationEnabled()) return;
+
+  const job = (async (): Promise<RoutingProvenance | null> => {
+    const record = await fetchGenerationRecord(pending.generationId, pending.requested, {
+      apiKey: _routingAttestation.apiKey!,
+      baseUrl: _routingAttestation.baseUrl,
+      // Our own lookup must never be captured as one of the agent's spans.
+      markInternal: (init) => ({ ...init, [OPENBOX_INTERNAL_REQUEST]: true }),
+    });
+    if (record == null) {
+      // Evidence that could not be collected is worth surfacing: the run is
+      // fine, but its provenance has a hole in it.
+      pending.entry.logger?.warn?.(
+        `routing provenance unavailable for ${pending.generationId} — the generation record did not appear in time`,
+      );
+      return null;
+    }
+
+    const nowNs = Date.now() * 1_000_000;
+    const spanData: Record<string, unknown> = {
+      span_id: stableSpanId(`${activityId}|routing|${record.generationId}`),
+      trace_id:
+        stableSpanId(`${activityId}|routing-trace|${record.generationId}`) +
+        stableSpanId(`${activityId}|routing-trace2|${record.generationId}`),
+      parent_span_id: null,
+      name: `routing ${record.provider ?? 'unknown'} ${record.model ?? ''}`.trim(),
+      kind: 'CLIENT',
+      stage: 'completed',
+      start_time: nowNs,
+      end_time: nowNs,
+      duration_ns: record.latencyMs != null ? record.latencyMs * 1_000_000 : null,
+      attributes: provenanceAttributes(record),
+      status: { code: 'OK', description: null },
+      events: [],
+      hook_type: 'llm_routing',
+      semantic_type: 'llm_completion',
+      gen_ai_system: record.provider ?? 'openrouter',
+      activity_id: activityId,
+    };
+
+    // Sent with the entry captured while the activity was open, because by the
+    // time the record exists the activity has closed.
+    await evaluateHookSpan(pending.entry, spanData).catch(() => undefined);
+    return record;
+  })();
+
+  _routingJobs.add(job);
+  void job.catch(() => undefined).finally(() => _routingJobs.delete(job));
+}
+
+/**
+ * Await outstanding provenance collection and return what was gathered.
+ *
+ * Called before a run closes, so the evidence is part of the session. Capped:
+ * a record that never appears must not hold a run open.
+ */
+export async function drainRoutingAttestations(capMs = 12_000): Promise<RoutingProvenance[]> {
+  if (_routingJobs.size === 0) return [];
+  const jobs = Array.from(_routingJobs);
+  const timeout = new Promise<Array<RoutingProvenance | null>>((resolve) => {
+    const timer = setTimeout(() => resolve([]), capMs);
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+  const settled = await Promise.race([
+    Promise.all(jobs.map((j) => j.catch(() => null))),
+    timeout,
+  ]);
+  return settled.filter((r): r is RoutingProvenance => r != null);
+}
+
 export function takeAssistantText(activityId: string): string | null {
   const text = _assistantText.get(activityId);
   if (text === undefined) return null;
@@ -1452,6 +1627,7 @@ export async function unregisterActivity(activityId: string): Promise<void> {
   // Anything not taken by LLMCompleted (a call that failed, or events off).
   _assistantText.delete(activityId);
   _llmSpanPending.delete(activityId);
+  _pendingRouting.delete(activityId);
   settleAssistantWaiters(activityId, null);
 }
 

@@ -80,9 +80,12 @@ import {
   registerActivity,
   runInScopeSync,
   awaitAssistantText,
+  beginRoutingAttestation,
+  drainRoutingAttestations,
   runWithActivityResolver,
   unregisterActivity,
 } from './span_processor';
+import type { RoutingProvenance } from './provenance';
 import { hexId, safeSerialize } from './types';
 import { enforceVerdict, GovernanceHaltError, unwrapGovernanceError } from './verdict';
 
@@ -476,6 +479,13 @@ export function createOpenBoxGovernance(
     const assistantText = await awaitAssistantText(activityId);
     if (assistantText != null) recordTranscript(run, 'assistant', assistantText);
 
+    // Which provider actually served this call. Started here — while the
+    // activity's context is still available to carry the span — but not
+    // awaited: OpenRouter writes the generation record a moment after the
+    // response, and no turn should wait on evidence nobody is blocked on. The
+    // run drains it before closing (see finalizeRun).
+    beginRoutingAttestation(activityId);
+
     await unregisterActivity(activityId);
 
     if (!mw._config.sendLlmEndEvent) return;
@@ -496,11 +506,6 @@ export function createOpenBoxGovernance(
         output_tokens: meta.output_tokens,
         total_tokens: meta.total_tokens,
         ...(meta.has_tool_calls !== undefined ? { has_tool_calls: meta.has_tool_calls } : {}),
-        // `PostModelCall` carries no response text, so this was `null` on
-        // every turn. The text comes from the model call's own response body,
-        // captured by the span layer that already parses it — no second read
-        // of the stream, and still null when the body was never captured
-        // (HTTP instrumentation off, or an unreadable body).
         completion: meta.completion ?? assistantText,
         // …and again as `activity_output`, because `completion` is not a
         // field Core's payload struct has — it is dropped at unmarshal, the
@@ -593,13 +598,20 @@ export function createOpenBoxGovernance(
           ? new Error('OpenRouter session ended with reason "error"')
           : undefined;
 
+    // Routing evidence lands after the turn that produced it (OpenRouter
+    // writes the record a moment later), so it is drained here — before the
+    // session closes, which is what keeps it inside the session's attestation.
+    const routing = await drainRoutingAttestations().catch(() => []);
+
     // Shaped as a messages array because that is what `handleAfterAgent`
     // reads to build `workflow_output`.
     const state = {
       messages: run.finalText != null ? [{ role: 'assistant', content: run.finalText }] : [],
     };
 
-    await mw.afterAgent(run.turn, state, error).catch(() => undefined);
+    await mw
+      .afterAgent(run.turn, state, error, routingSummary(routing))
+      .catch(() => undefined);
   }
 
   /** Finalize if, and only if, both the engine and the reader are done. */
@@ -1116,6 +1128,32 @@ function denormalizeInput(original: unknown, messages: unknown[]): unknown {
     return typeof content === 'string' ? content : original;
   }
   return messages;
+}
+
+/**
+ * Session-level routing summary: who served this run, where, and at what cost.
+ *
+ * The per-call records are already spans; this is the one-line answer a
+ * reviewer wants first — and, because it rides the closing event, it is
+ * attested with the rest of the session.
+ */
+function routingSummary(records: RoutingProvenance[]): Record<string, unknown> | undefined {
+  if (records.length === 0) return undefined;
+  const providers = [...new Set(records.map((r) => r.provider).filter((p): p is string => p != null))];
+  const regions = [...new Set(records.map((r) => r.dataRegion).filter((d): d is string => d != null))];
+  const costs = records.map((r) => r.totalCost).filter((c): c is number => c != null);
+  const checked = records.filter((r) => r.honored != null);
+  const fallbacks = records.reduce((n, r) => n + r.attempts.length, 0);
+
+  return {
+    model_calls: records.length,
+    upstream_providers: providers,
+    data_regions: regions,
+    ...(costs.length > 0 ? { total_cost: costs.reduce((a, b) => a + b, 0) } : {}),
+    ...(checked.length > 0 ? { routing_honored: checked.every((r) => r.honored === true) } : {}),
+    ...(fallbacks > 0 ? { fallback_attempts: fallbacks } : {}),
+    generation_ids: records.map((r) => r.generationId),
+  };
 }
 
 /** The governed prompt: the last user turn's text. */
