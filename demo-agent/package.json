@@ -1,0 +1,29 @@
+{
+  "name": "openbox-openrouter-demo-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Demo agent: @openrouter/agent governed by OpenBox, using the SDK as a local dependency.",
+  "type": "commonjs",
+  "scripts": {
+    "agent": "tsx src/agent.ts",
+    "agent:stream": "tsx src/agent.ts --stream",
+    "typecheck": "tsc --noEmit",
+    "ui": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@openrouter/agent": "^0.11.0",
+    "dotenv": "^16.4.5",
+    "ioredis": "^6.0.0",
+    "mongodb": "^7.6.0",
+    "mysql2": "^3.24.2",
+    "openbox-openrouter-governance": "file:..",
+    "pg": "^8.23.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

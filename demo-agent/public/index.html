@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenBox × OpenRouter — governed agent</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #ffffff; --ink: #1a1a18; --muted: #6b6b66;
+    --line: #e6e4df; --accent: #2f6f4f; --warn: #a76a12; --stop: #a3352b;
+    --code: #f4f3f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14150f; --panel: #1c1d17; --ink: #eceade; --muted: #9a988c;
+      --line: #2e2f27; --accent: #7fbf95; --warn: #e0a949; --stop: #e07a6e;
+      --code: #222319;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    border-bottom: 1px solid var(--line); padding: 18px 24px;
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 620; letter-spacing: -0.01em; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px; }
+  form { display: flex; gap: 10px; margin-bottom: 22px; }
+  input[type=text] {
+    flex: 1; padding: 11px 13px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); color: var(--ink); font: inherit;
+  }
+  input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button {
+    padding: 11px 18px; border: 0; border-radius: 8px; background: var(--ink);
+    color: var(--bg); font: inherit; font-weight: 560; cursor: pointer;
+  }
+  button:disabled { opacity: .45; cursor: default; }
+  .examples { display: flex; gap: 8px; flex-wrap: wrap; margin: -12px 0 22px; }
+  .examples button {
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+    padding: 5px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 460;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 14px;
+  }
+  .prompt { color: var(--muted); font-size: 13.5px; margin-bottom: 14px; }
+  .row {
+    display: grid; grid-template-columns: 10px 1fr auto auto; gap: 10px;
+    align-items: baseline; padding: 7px 0; border-top: 1px solid var(--line);
+  }
+  .row:first-of-type { border-top: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); align-self: center; }
+  .dot.allow { background: var(--accent); }
+  .dot.block, .dot.halt, .dot.unreachable { background: var(--stop); }
+  .dot.require_approval { background: var(--warn); }
+  .dot.pending { background: var(--line); }
+  .name { font-weight: 540; }
+  .name.llm { color: var(--muted); font-weight: 460; }
+  .verdict {
+    font-size: 11.5px; letter-spacing: .04em; text-transform: uppercase;
+    font-weight: 600; color: var(--muted);
+  }
+  .verdict.block, .verdict.halt, .verdict.unreachable { color: var(--stop); }
+  .verdict.require_approval { color: var(--warn); }
+  .ms { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12.5px; }
+  .detail {
+    grid-column: 2 / -1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; color: var(--muted); background: var(--code);
+    padding: 7px 9px; border-radius: 6px; margin-top: 5px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .detail.reason { color: var(--stop); background: transparent; padding: 2px 0; font-family: inherit; font-size: 13px; }
+  .answer { white-space: pre-wrap; }
+  .answer:empty::after { content: "…"; color: var(--muted); }
+  .error {
+    border-left: 3px solid var(--stop); padding-left: 12px; color: var(--stop);
+    font-size: 14px;
+  }
+  .error .kind { font-weight: 620; }
+  footer-link, .session {
+    display: inline-block; margin-top: 12px; font-size: 13px; color: var(--accent);
+  }
+  .hint { color: var(--muted); font-size: 12.5px; margin-top: 26px; line-height: 1.7; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenBox × OpenRouter</h1>
+  <span class="sub">an @openrouter/agent run, governed end to end — every decision below came from Core</span>
+</header>
+
+<main>
+  <form id="f">
+    <input id="q" type="text" autocomplete="off"
+      value="Order A-1003 arrived damaged. Check it and refund me in full."
+      placeholder="Ask the support agent something…" />
+    <button id="go" type="submit">Run</button>
+  </form>
+
+  <div class="examples">
+    <button data-q="Order A-1003 arrived damaged. Check it and refund me in full.">refund (money-moving tool)</button>
+    <button data-q="Check the status of orders A-1001, A-1002 and A-1003, then summarise all three.">parallel tool round</button>
+    <button data-q="What is the returns policy for damaged items? Search the help centre.">outbound HTTP tool</button>
+  </div>
+
+  <div id="out"></div>
+
+  <p class="hint">
+    Each row is one governed activity: the model calls and every tool, with the verdict Core returned.
+    A policy on this agent decides them — attach one and a <code>refund_order</code> row turns
+    <strong>BLOCK</strong> or <strong>HALT</strong>, or waits on <strong>REQUIRE_APPROVAL</strong> while a
+    human decides. The tool body never runs unless the verdict allows it.
+  </p>
+</main>
+
+<script>
+const form = document.getElementById('f');
+const input = document.getElementById('q');
+const go = document.getElementById('go');
+const out = document.getElementById('out');
+
+for (const b of document.querySelectorAll('.examples button')) {
+  b.addEventListener('click', () => { input.value = b.dataset.q; input.focus(); });
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const prompt = input.value.trim();
+  if (!prompt) return;
+
+  go.disabled = true;
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = '<div class="prompt"></div><div class="rows"></div><div class="answer"></div>';
+  card.querySelector('.prompt').textContent = prompt;
+  out.prepend(card);
+  const rows = card.querySelector('.rows');
+  const answer = card.querySelector('.answer');
+  const seen = new Map();
+
+  const res = await fetch('/run', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt }),
+  });
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop();
+    for (const part of parts) {
+      if (!part.startsWith('data: ')) continue;
+      handle(JSON.parse(part.slice(6)));
+    }
+  }
+  go.disabled = false;
+
+  function handle(ev) {
+    if (ev.type === 'activity') return activity(ev);
+    if (ev.type === 'answer') { answer.textContent += ev.text; return; }
+    if (ev.type === 'done') return finish(ev.sessionUrl);
+    if (ev.type === 'error') {
+      const box = document.createElement('div');
+      box.className = 'error';
+      box.innerHTML = '<span class="kind"></span> <span class="msg"></span>';
+      box.querySelector('.kind').textContent = ev.name;
+      box.querySelector('.msg').textContent = ev.message;
+      card.appendChild(box);
+      finish(ev.sessionUrl);
+    }
+  }
+
+  function activity(ev) {
+    let row = seen.get(ev.id);
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML =
+        '<span class="dot pending"></span>' +
+        '<span class="name"></span>' +
+        '<span class="verdict"></span>' +
+        '<span class="ms"></span>';
+      row.querySelector('.name').textContent = ev.name;
+      if (ev.name === 'llm_call') row.querySelector('.name').classList.add('llm');
+      rows.appendChild(row);
+      seen.set(ev.id, row);
+    }
+
+    const dot = row.querySelector('.dot');
+    const verdict = row.querySelector('.verdict');
+    dot.className = 'dot ' + ev.verdict;
+    verdict.className = 'verdict ' + ev.verdict;
+    verdict.textContent = ev.verdict === 'allow' ? 'allow' : ev.verdict.replace('_', ' ');
+    if (ev.durationMs != null && ev.stage === 'completed') {
+      row.querySelector('.ms').textContent = (ev.durationMs / 1000).toFixed(1) + 's';
+    }
+
+    if (ev.reason && !row.querySelector('.detail.reason')) {
+      const d = document.createElement('div');
+      d.className = 'detail reason';
+      d.textContent = ev.reason;
+      row.appendChild(d);
+    }
+    if (ev.patch && !row.querySelector('.detail.patch')) {
+      const d = document.createElement('div');
+      d.className = 'detail patch';
+      d.textContent = 'policy suggests retrying with: ' + JSON.stringify(ev.patch.new_input);
+      row.appendChild(d);
+    }
+    if (ev.output && !row.querySelector('.detail.out')) {
+      const d = document.createElement('div');
+      d.className = 'detail out';
+      d.textContent = ev.output;
+      row.appendChild(d);
+    }
+  }
+
+  function finish(url) {
+    if (!url || card.querySelector('.session')) return;
+    const a = document.createElement('a');
+    a.className = 'session';
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noreferrer';
+    a.textContent = 'Open this session in the OpenBox dashboard ↗';
+    card.appendChild(a);
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+{
+  "name": "openbox-openrouter-governance",
+  "version": "0.1.0",
+  "description": "OpenBox governance + observability for the OpenRouter Agent SDK (@openrouter/agent). 1:1 port of the n8n OpenBox node's governance layer.",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@openrouter/agent": ">=0.11.0"
+  },
+  "peerDependenciesMeta": {
+    "@openrouter/agent": { "optional": true }
+  },
+  "devDependencies": {
+    "@openrouter/agent": "^0.11.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": { "node": ">=18.17" }
+}
