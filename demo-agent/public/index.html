@@ -86,6 +86,35 @@
   footer-link, .session {
     display: inline-block; margin-top: 12px; font-size: 13px; color: var(--accent);
   }
+  .scenarios { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .scenarios button {
+    background: var(--panel); color: var(--muted); border: 1px solid var(--line);
+    padding: 6px 13px; border-radius: 7px; font-size: 13px; font-weight: 500;
+  }
+  .scenarios button[aria-pressed="true"] {
+    border-color: var(--ink); color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--ink);
+  }
+  .scenario-note {
+    color: var(--muted); font-size: 13px; margin: 0 0 18px; min-height: 1.5em;
+  }
+  .scenario-note b { color: var(--ink); font-weight: 560; }
+  .warn {
+    border-left: 3px solid var(--warn); padding-left: 11px; color: var(--warn);
+    font-size: 13px; margin-bottom: 12px;
+  }
+  .decide { display: flex; gap: 8px; margin-top: 7px; }
+  .decide button {
+    padding: 5px 13px; border-radius: 6px; font-size: 12.5px; font-weight: 560;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  .decide button.approve { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  .decide button.deny { color: var(--stop); border-color: var(--stop); }
+  .decide button:disabled { opacity: .5; cursor: default; }
+  .pending .dot { animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .pending .dot { animation: none; } }
+
   .hint { color: var(--muted); font-size: 12.5px; margin-top: 26px; line-height: 1.7; }
   code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
 </style>
@@ -104,11 +133,8 @@
     <button id="go" type="submit">Run</button>
   </form>
 
-  <div class="examples">
-    <button data-q="Order A-1003 arrived damaged. Check it and refund me in full.">refund (money-moving tool)</button>
-    <button data-q="Check the status of orders A-1001, A-1002 and A-1003, then summarise all three.">parallel tool round</button>
-    <button data-q="What is the returns policy for damaged items? Search the help centre.">outbound HTTP tool</button>
-  </div>
+  <div class="scenarios" id="scenarios"></div>
+  <p class="scenario-note" id="note"></p>
 
   <div id="out"></div>
 
@@ -126,9 +152,38 @@ const input = document.getElementById('q');
 const go = document.getElementById('go');
 const out = document.getElementById('out');
 
-for (const b of document.querySelectorAll('.examples button')) {
-  b.addEventListener('click', () => { input.value = b.dataset.q; input.focus(); });
+const note = document.getElementById('note');
+const tabs = document.getElementById('scenarios');
+let scenarios = [];
+let current = 'allow';
+
+function paintScenario() {
+  const s = scenarios.find((x) => x.name === current);
+  if (!s) return;
+  for (const b of tabs.querySelectorAll('button')) {
+    b.setAttribute('aria-pressed', String(b.dataset.name === current));
+  }
+  note.innerHTML = '';
+  const what = document.createElement('b');
+  what.textContent = s.summary + ' ';
+  note.appendChild(what);
+  note.appendChild(document.createTextNode(s.expect));
+  input.value = s.prompt;
 }
+
+fetch('/scenarios').then((r) => r.json()).then((list) => {
+  scenarios = list;
+  for (const s of list) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = s.label;
+    b.dataset.name = s.name;
+    b.setAttribute('aria-pressed', String(s.name === current));
+    b.addEventListener('click', () => { current = s.name; paintScenario(); });
+    tabs.appendChild(b);
+  }
+  paintScenario();
+});
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -148,7 +203,7 @@ form.addEventListener('submit', async (e) => {
   const res = await fetch('/run', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, scenario: current }),
   });
 
   const reader = res.body.getReader();
@@ -169,6 +224,15 @@ form.addEventListener('submit', async (e) => {
   go.disabled = false;
 
   function handle(ev) {
+    if (ev.type === 'scenario') {
+      if (!ev.applied) {
+        const w = document.createElement('div');
+        w.className = 'warn';
+        w.textContent = ev.detail + ' Running with whatever policy is currently attached.';
+        card.insertBefore(w, rows);
+      }
+      return;
+    }
     if (ev.type === 'activity') return activity(ev);
     if (ev.type === 'answer') { answer.textContent += ev.text; return; }
     if (ev.type === 'done') return finish(ev.sessionUrl);
@@ -220,12 +284,51 @@ form.addEventListener('submit', async (e) => {
       d.textContent = 'policy suggests retrying with: ' + JSON.stringify(ev.patch.new_input);
       row.appendChild(d);
     }
+    // A held activity is the one place the page can act: the SDK is polling
+    // for exactly this decision.
+    if (ev.verdict === 'require_approval' && ev.stage === 'started') {
+      row.classList.add('pending');
+      if (!row.querySelector('.decide')) row.appendChild(decisionButtons(ev.id));
+    } else {
+      row.classList.remove('pending');
+    }
+
     if (ev.output && !row.querySelector('.detail.out')) {
       const d = document.createElement('div');
       d.className = 'detail out';
       d.textContent = ev.output;
       row.appendChild(d);
     }
+  }
+
+  function decisionButtons(activityId) {
+    const wrap = document.createElement('div');
+    wrap.className = 'decide';
+    const approve = document.createElement('button');
+    approve.className = 'approve';
+    approve.type = 'button';
+    approve.textContent = 'Approve';
+    const deny = document.createElement('button');
+    deny.className = 'deny';
+    deny.type = 'button';
+    deny.textContent = 'Deny';
+
+    const send = async (ok) => {
+      approve.disabled = deny.disabled = true;
+      const res = await fetch('/decide', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ activityId: activityId, approve: ok }),
+      });
+      const out = await res.json().catch(() => ({}));
+      wrap.textContent = out.ok
+        ? (ok ? 'Approved — the tool may run.' : 'Denied — the run will end.')
+        : ('Could not record the decision: ' + (out.detail || 'unknown error'));
+    };
+    approve.addEventListener('click', () => send(true));
+    deny.addEventListener('click', () => send(false));
+    wrap.append(approve, deny);
+    return wrap;
   }
 
   function finish(url) {

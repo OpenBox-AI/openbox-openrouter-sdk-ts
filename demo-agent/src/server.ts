@@ -26,6 +26,13 @@ import {
 import { Client as PgClient } from 'pg';
 
 import { ALL_TOOLS, INSTRUCTIONS, TOOL_TYPES } from './tools';
+import {
+  SCENARIOS,
+  applyScenario,
+  decideApproval,
+  findScenario,
+  type Scenario,
+} from './scenarios';
 
 const PORT = Number(process.env.UI_PORT ?? 4545);
 const DASHBOARD = process.env.OPENBOX_DASHBOARD_URL ?? 'http://localhost:3233';
@@ -33,7 +40,7 @@ const DASHBOARD = process.env.OPENBOX_DASHBOARD_URL ?? 'http://localhost:3233';
 // ── governance → UI ─────────────────────────────────────────────────────────
 
 interface UiEvent {
-  type: 'activity' | 'answer' | 'done' | 'error';
+  type: 'activity' | 'answer' | 'done' | 'error' | 'scenario';
   [key: string]: unknown;
 }
 
@@ -155,7 +162,11 @@ async function sessionUrl(workflowId: string | null): Promise<string | null> {
 
 // ── one governed run, streamed ──────────────────────────────────────────────
 
-async function runAgent(prompt: string, emit: (event: UiEvent) => void): Promise<void> {
+async function runAgent(
+  prompt: string,
+  scenario: Scenario,
+  emit: (event: UiEvent) => void,
+): Promise<void> {
   const credentials = {
     openboxUrl: process.env.OPENBOX_API_URL ?? 'http://localhost:8086',
     apiKey: process.env.OPENBOX_API_KEY ?? '',
@@ -169,7 +180,9 @@ async function runAgent(prompt: string, emit: (event: UiEvent) => void): Promise
     transport,
     onApiError: 'fail_closed',
     toolTypeMap: TOOL_TYPES,
-    hitl: { enabled: true, pollIntervalMs: 3_000, timeoutMs: 5 * 60_000 },
+    // Long enough for someone to actually decide on the page; the other arms
+    // never reach the poll loop.
+    hitl: { enabled: true, pollIntervalMs: 2_000, timeoutMs: 5 * 60_000 },
     logger: { warn: () => undefined },
   });
 
@@ -204,6 +217,16 @@ async function runAgent(prompt: string, emit: (event: UiEvent) => void): Promise
 
 // ── server ──────────────────────────────────────────────────────────────────
 
+async function readJson(req: import('node:http').IncomingMessage): Promise<Record<string, unknown> | null> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk as Buffer);
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 const server = createServer(async (req, res) => {
   if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
     const html = await readFile(join(__dirname, '..', 'public', 'index.html'), 'utf8');
@@ -212,16 +235,31 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && req.url === '/scenarios') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(SCENARIOS));
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/decide') {
+    const body = await readJson(req);
+    const outcome = await decideApproval(
+      String(body?.activityId ?? ''),
+      Boolean(body?.approve),
+    );
+    res.writeHead(outcome.ok ? 200 : 409, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(outcome));
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/run') {
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(chunk as Buffer);
-    let prompt = '';
-    try {
-      prompt = String(JSON.parse(Buffer.concat(chunks).toString('utf8')).prompt ?? '');
-    } catch {
+    const body = await readJson(req);
+    if (body == null) {
       res.writeHead(400).end('bad request');
       return;
     }
+    const prompt = String(body.prompt ?? '');
+    const scenario = findScenario(body.scenario as string | undefined);
 
     res.writeHead(200, {
       'content-type': 'text/event-stream',
@@ -230,8 +268,13 @@ const server = createServer(async (req, res) => {
     });
     const emit = (event: UiEvent) => res.write(`data: ${JSON.stringify(event)}\n\n`);
 
-    console.log(`\n  [run] ${JSON.stringify(prompt)}`);
-    await runAgent(prompt, emit).catch((err) =>
+    console.log(`\n  [run] ${scenario.name} — ${JSON.stringify(prompt)}`);
+
+    // Put the policy in the scenario's state before the run, not during it.
+    const state = await applyScenario(scenario);
+    emit({ type: 'scenario', name: scenario.name, ...state });
+
+    await runAgent(prompt, scenario, emit).catch((err) =>
       emit({ type: 'error', name: 'Error', message: String(err) }),
     );
     res.end();

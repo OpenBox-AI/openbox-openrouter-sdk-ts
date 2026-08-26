@@ -112,20 +112,39 @@ Set in `.env`:
 ## Web UI
 
 ```bash
-npm run ui     # http://localhost:4545
+npm run ui     # http://localhost:4545  (UI_PORT to change it)
 ```
 
 Drives the same governed agent as `npm run agent`, server-side — the
 OpenRouter and OpenBox keys never reach the browser. Each row on the page is
 one governed activity (every model call and every tool) showing the verdict
-Core returned, the policy's reason when it blocks, any remediation directive
+Core returned, the policy's reason when it refuses, any remediation directive
 it attached, and a deep link into the session in the OpenBox dashboard.
 
-Attach a policy to the agent and the same run shows `BLOCK` / `HALT`, or waits
-on `REQUIRE_APPROVAL` while a human decides — the tool body never runs unless
-the verdict allows it.
+### Scenarios
 
-Environment: `UI_PORT` (default 4545), `OPENBOX_DASHBOARD_URL` (default
-`http://localhost:3233`). The dashboard link is resolved from the local
-OpenBox database (`OPENBOX_DB_*`); without it everything still works, minus
-the link.
+Four buttons put the agent's policy into a known state before the run, so the
+same prompt can be run four ways and the difference is the verdict:
+
+| Scenario | Policy | What you should see |
+|---|---|---|
+| **Allowed** | none attached | the refund runs, the agent confirms £12 |
+| **Blocked** | refunds over £5 refused, capped amount suggested | `refund_order` is refused; the model retries with £5 and that retry is evaluated fresh and allowed |
+| **Halted** | refunds stop the session | the tool never runs, no further model call goes out, the run ends with `GovernanceHaltError` |
+| **Needs approval** | a refund waits for a human | the row holds on `REQUIRE APPROVAL` with **Approve** / **Deny** — approve and the tool runs, deny and the run ends with the reviewer's reason |
+
+Switching a scenario rewrites the rego module OPA is watching and toggles the
+policy row Core looks up. That needs the local fixture:
+
+| Variable | Default | What it is |
+|---|---|---|
+| `OPENBOX_POLICY_FILE` | `/private/tmp/openbox-opa-verify/policy.rego` | the module served by `opa run -s -w <file>` |
+| `OPENBOX_POLICY_ID` | the fixture's id | the `policies` row for this agent, whose `config.path` matches the module's package |
+| `OPENBOX_DB_*` | localhost / postgres / password / openbox | used to toggle the policy, resolve the session link, and record an approval decision |
+
+Without them the page says so and runs against whatever policy is already
+attached — every other part still works.
+
+**Approve / Deny writes the decision a reviewer would make in the dashboard**
+(`governance_events.verdict`), which is exactly what the SDK's approval poll is
+waiting for. It is a demo convenience, not an approval API.
