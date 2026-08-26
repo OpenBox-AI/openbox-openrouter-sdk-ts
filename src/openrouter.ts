@@ -291,7 +291,7 @@ export interface OpenBoxGovernance {
  *
  * ```ts
  * import { callModel, tool } from '@openrouter/agent';
- * import { createOpenBoxGovernance } from 'openbox-openrouter-governance';
+ * import { createOpenBoxGovernance } from '@openbox-ai/openbox-openrouter-governance';
  *
  * const openbox = createOpenBoxGovernance({ agentName: 'research-agent' });
  *
