@@ -1,0 +1,307 @@
+name: Release
+
+# Triggers when the version in package.json is bumped on a push to main.
+# See RELEASING.md for the full process.
+#
+# One-time npm setup (OIDC Trusted Publishing — no long-lived secrets):
+#   1. npmjs.com → package settings → Publish access → Trusted Publishers
+#   2. Add: GitHub Actions, owner=OpenBox-AI,
+#      repo=openbox-openrouter-sdk-ts, workflow=release.yml
+#   3. Leave NPM_TOKEN unset — GitHub OIDC is used automatically.
+#
+# Fallback: add NPM_TOKEN to repo secrets (Settings → Secrets → Actions).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'package.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+  GITLEAKS_VERSION: "8.30.0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 — Governance
+# Confirms the required files exist and that this version is not already on npm.
+# Every later stage is skipped when the version is unchanged, so an unrelated
+# package.json edit does not trigger a release.
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  release-governance:
+    name: Release Governance
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      package: ${{ steps.get_version.outputs.package }}
+      should_publish: ${{ steps.check_npm.outputs.should_publish }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify required files exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_files=(
+            "package.json"
+            "package-lock.json"
+            "tsconfig.json"
+            "README.md"
+            "LICENSE"
+            "SECURITY.md"
+            "CODE_OF_CONDUCT.md"
+          )
+          for f in "${required_files[@]}"; do
+            if [ ! -f "${f}" ]; then
+              echo "Missing required file: ${f}"
+              exit 1
+            fi
+          done
+          echo "All required governance files present."
+
+      - name: Get package name and version
+        id: get_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          package=$(node -p "require('./package.json').name")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "package=${package}" >> "$GITHUB_OUTPUT"
+          echo "${package}@${version}"
+
+      - name: Check if version already exists on npm
+        id: check_npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.get_version.outputs.version }}"
+          PKG="${{ steps.get_version.outputs.package }}"
+          if npm view "${PKG}@${VERSION}" version 2>/dev/null | grep -q "${VERSION}"; then
+            echo "Version ${VERSION} already exists on npm — skipping publish."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version ${VERSION} is new — will publish."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 — Quality (parallel with security)
+# ─────────────────────────────────────────────────────────────────────────────
+  release-quality:
+    name: Release Quality
+    runs-on: ubuntu-latest
+    needs: [release-governance]
+    if: needs.release-governance.outputs.should_publish == 'true'
+    strategy:
+      matrix:
+        node: ["20", "22"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Verify pack contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_output=$(npm pack --dry-run 2>&1)
+          echo "$pack_output"
+          if ! echo "$pack_output" | grep -q "dist/"; then
+            echo "ERROR: dist/ not found in pack output"
+            exit 1
+          fi
+          echo "Pack contents look correct."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 3a — Security: Trivy
+# ─────────────────────────────────────────────────────────────────────────────
+  release-security-trivy:
+    name: Release Security (Trivy)
+    runs-on: ubuntu-latest
+    needs: [release-governance]
+    if: needs.release-governance.outputs.should_publish == 'true'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@e07451d2e059ed86c2870430ea286b3a9e0bf241
+        with:
+          cache: true
+          version: v0.69.2
+
+      - name: Run Trivy filesystem scan (console)
+        id: trivy_console
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          trivy fs . \
+            --scanners vuln \
+            --vuln-type library \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --skip-dirs node_modules \
+            --format table \
+            --exit-code 1
+
+      - name: Run Trivy filesystem scan (SARIF)
+        if: always()
+        shell: bash
+        run: |
+          trivy fs . \
+            --scanners vuln \
+            --vuln-type library \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --skip-dirs node_modules \
+            --format sarif \
+            --output trivy-results.sarif \
+            --exit-code 0
+
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-release
+
+      - name: Fail on vulnerabilities
+        if: steps.trivy_console.outcome == 'failure'
+        run: |
+          echo "Trivy found HIGH/CRITICAL vulnerabilities. Release blocked."
+          exit 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 3b — Security: Gitleaks
+# ─────────────────────────────────────────────────────────────────────────────
+  release-security-secrets:
+    name: Release Security (Gitleaks)
+    runs-on: ubuntu-latest
+    needs: [release-governance]
+    if: needs.release-governance.outputs.should_publish == 'true'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Run Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          gitleaks dir . \
+            --no-banner \
+            --exit-code 1 \
+            --report-format sarif \
+            --report-path gitleaks-results.sarif
+
+      - name: Upload Gitleaks SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gitleaks-results.sarif
+          category: gitleaks-release
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 4 — Publish (only after every prior stage passes)
+# ─────────────────────────────────────────────────────────────────────────────
+  release-publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs:
+      - release-governance
+      - release-quality
+      - release-security-trivy
+      - release-security-secrets
+    if: needs.release-governance.outputs.should_publish == 'true'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js (with npm registry)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish to npm with provenance
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.release-governance.outputs.version }}
+          name: "v${{ needs.release-governance.outputs.version }}"
+          body: |
+            ## ${{ needs.release-governance.outputs.package }} v${{ needs.release-governance.outputs.version }}
+
+            OpenBox governance and observability for the OpenRouter Agent SDK.
+
+            ```bash
+            npm install ${{ needs.release-governance.outputs.package }}@${{ needs.release-governance.outputs.version }}
+            ```
+
+            📦 [npm package](https://www.npmjs.com/package/${{ needs.release-governance.outputs.package }})
+          generate_release_notes: true

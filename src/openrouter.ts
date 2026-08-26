@@ -1,15 +1,15 @@
 /**
  * The OpenRouter Agent SDK binding — the counterpart of `OpenBoxAgent.node.ts`
- * in the n8n integration.
+ * of this SDK.
  *
- * ─── How this maps onto the n8n node ──────────────────────────────────────
+ * ─── How the middleware attaches ──────────────────────────────────────────
  *
- * The n8n node owns its own agent loop, so it calls the five middleware
- * methods directly. `@openrouter/agent` owns the loop instead, and exposes
+ * A host that owns its agent loop calls the five middleware methods directly.
+ * `@openrouter/agent` owns the loop instead, and exposes
  * two extension points: the `tool()` objects it executes, and the lifecycle
  * hooks it emits. So governance is attached in three places:
  *
- *   n8n node                      here
+ *   middleware method             attached here via
  *   ─────────────────────────     ──────────────────────────────────────────
  *   beforeAgent()             →   awaited inside `callModel()` before the
  *                                 request goes out (NOT the SessionStart /
@@ -145,7 +145,7 @@ interface CallModelRequestLike {
 /**
  * Per-run state. One instance per `callModel()` call — never shared, so two
  * concurrent runs on one middleware can't clobber each other's turn identity
- * or LLM activity id. This mirrors the n8n port's rule that turn identity is
+ * or LLM activity id. Turn identity is
  * a value threaded through calls, never mutable state on the middleware.
  */
 class RunState {
@@ -246,13 +246,13 @@ class RunState {
 }
 
 export interface OpenBoxGovernance {
-  /** The underlying middleware — the same object the n8n node drives. */
+  /** The underlying middleware, if you need to drive it directly. */
   readonly middleware: OpenBoxOpenRouterMiddleware;
 
   /**
    * Wrap each tool so its execution is governed end-to-end
    * (ToolStarted → HITL approval → execute → ToolCompleted), exactly as
-   * `wrapToolCall` does in the n8n node.
+   * `wrapToolCall` does.
    *
    * Tools whose body cannot be wrapped without changing its semantics —
    * async-generator `execute`, and manual tools with no body at all — are
@@ -278,7 +278,7 @@ export interface OpenBoxGovernance {
 
   /**
    * Drain in-flight span telemetry and release instrumentation state. Always
-   * await it — the equivalent of `openbox.close()` in the LangChain SDK.
+   * await it — the counterpart to opening the run.
    */
   close(): Promise<void>;
 }
@@ -353,7 +353,7 @@ export function createOpenBoxGovernance(
   /**
    * Open the llm_call activity and enforce its verdict — the first half of
    * `handleWrapModelCall`. Throws on block/halt (closing the orphaned row
-   * first, exactly as the n8n port does) and polls on require_approval.
+   * first) and polls on require_approval.
    */
   async function openLlmActivity(run: RunState, messages?: unknown[]): Promise<void> {
     if (run.llmActivityId != null) return; // already open for this turn
@@ -395,9 +395,9 @@ export function createOpenBoxGovernance(
 
     // PII redaction — apply whenever Core returned a valid coercion of
     // `redacted_input`. No length heuristic: redaction removes or replaces
-    // content, it never expands it arbitrarily, and the heuristic the n8n port
-    // once had silently skipped legitimate (longer) redactions, leaking the
-    // raw prompt to the provider. `messages` is only passed for the pre-flight
+    // content, it never expands it arbitrarily, and a length heuristic here
+    // silently skipped legitimate (longer) redactions, leaking the raw prompt
+    // to the provider. `messages` is only passed for the pre-flight
     // call, the one turn whose input this SDK still owns; a mid-run turn's
     // input lives inside the engine, so a redaction verdict there can only
     // block, not rewrite.
@@ -594,8 +594,7 @@ export function createOpenBoxGovernance(
           : undefined;
 
     // Shaped as a messages array because that is what `handleAfterAgent`
-    // reads to build `workflow_output` — the same contract the n8n node
-    // satisfies by handing over its real agent state.
+    // reads to build `workflow_output`.
     const state = {
       messages: run.finalText != null ? [{ role: 'assistant', content: run.finalText }] : [],
     };
@@ -616,9 +615,8 @@ export function createOpenBoxGovernance(
    * This is deliberately NOT done at PreToolUse. Opening it there made the
    * tool's ActivityStarted/Completed pair land INSIDE the llm_call's, so the
    * session log read as "the model call started, a tool ran during it, the
-   * model call ended" — implying the tool executed mid-call. The n8n node's
-   * log is a flat sequence (llm_call, tool, llm_call), and this is what
-   * restores it. The pre-screen gate is unaffected: the round still ends
+   * model call ended" — implying the tool executed mid-call. The log should
+   * be a flat sequence (llm_call, tool, llm_call), and this is what restores it. The pre-screen gate is unaffected: the round still ends
    * strictly before the next model call.
    *
    * The counter (rather than a bare `llmActivityId == null` check) is what
@@ -836,8 +834,7 @@ export function createOpenBoxGovernance(
         },
       ],
 
-      // Two engine-level safety signals the n8n node has no equivalent of —
-      // its loop cannot hit either. Reporting them is the point: an agent that
+      // Two engine-level safety signals. Reporting them is the point: an agent that
       // exhausts its turn budget, or loops on the same call, is exactly the
       // behavior a reviewer wants on the timeline rather than lost in stdout.
       Stop: [

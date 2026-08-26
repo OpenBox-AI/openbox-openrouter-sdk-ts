@@ -13,7 +13,7 @@ import { createHash, createPrivateKey, randomBytes, sign as cryptoSign } from 'c
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pkg = require('../package.json') as { version: string };
 const SDK_PACKAGE_VERSION = pkg.version;
-/** Mirrors openbox-langchain-sdk-ts's sdk-metadata.ts identity scheme. */
+/** Identity scheme for request signing. */
 const SDK_IDENTITY = `openbox-openrouter-typescript-v${SDK_PACKAGE_VERSION}`;
 
 export const EMPTY_BODY_SHA256 =

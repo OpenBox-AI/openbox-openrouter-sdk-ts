@@ -1,7 +1,5 @@
 /**
- * Hook handler functions — port of the n8n node's
- * `shared/langchain/hook_handlers.ts` (itself a port of
- * middleware_hook_handlers.py).
+ * Hook handler functions: the lifecycle stages composed into the middleware.
  *
  * handle_before_agent / handle_after_agent / handle_wrap_model_call.
  */
@@ -156,7 +154,6 @@ export async function handleAfterAgent(
   }));
 
   // Clean up any lingering activity registrations for this workflow.
-  // Mirrors Python SDK's span_processor.unregister_workflow(workflow_id).
   unregisterWorkflow(turn.workflowId);
   return verdict;
 }
@@ -217,8 +214,7 @@ export async function handleWrapModelCall(
     }
   }
 
-  // ── Layer 2: HTTP span collector (mirrors Python's WorkflowSpanProcessor +
-  // http_governance_hooks). Patches Node.js https.request so the actual HTTP
+  // ── Layer 2: HTTP span collector. Patches Node.js https.request so the actual HTTP
   // call to the LLM provider is intercepted and its request/response bodies
   // are sent to Core as ActivityStarted + hook_trigger + http_request spans.
   const activityCtxBase = baseEventFields(mw, turn);
@@ -355,13 +351,12 @@ export async function handleWrapMemoryOp<T>(
   );
 
   // Capture result so ActivityCompleted can include activity_output.
-  // The Python SDK (activity_interceptor._send_activity_event) uses the same
-  // activity_id for both ActivityStarted and ActivityCompleted. Core matches
+  // The same activity_id is used for both ActivityStarted and
+  // ActivityCompleted. Core matches
   // completions to their starts by activity_id; a different id (e.g. '-c' suffix)
   // produces an orphan that Core discards — the dashboard shows "started, never ended".
-  // When fn() throws (e.g. Postgres error), the Python SDK never calls
-  // _handle_completion (Temporal runtime tracks the failure). In n8n we have no
-  // runtime, so we always send ActivityCompleted from finally — with the correct id.
+  // When fn() throws (e.g. a Postgres error), ActivityCompleted is still sent
+  // from finally — with the correct id — so the activity never dangles.
   let status: 'completed' | 'failed' = 'completed';
   let errorInfo: ReturnType<typeof toErrorInfo> | undefined;
   let result: T | undefined;
@@ -414,8 +409,8 @@ export async function handleWrapMemoryOp<T>(
       ...(errorInfo ? { error: errorInfo } : {}),
     });
     // Await ActivityCompleted so it arrives at Core before the caller proceeds
-    // to the next lifecycle event (e.g. LLMStarted). Matches Python SDK's
-    // sequential await pattern — all events must be strictly ordered by arrival.
+    // to the next lifecycle event (e.g. LLMStarted): lifecycle events must be
+    // strictly ordered by arrival.
     try {
       await evaluate(mw, completedEvent);
     } catch { /* non-fatal */ }

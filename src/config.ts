@@ -1,10 +1,10 @@
 /**
  * Governance configuration.
  *
- * Ported from the n8n node's `shared/langchain/config.ts`. Same fields, same
+ * Resolved configuration. Same
  * defaults, with three deliberate changes for this runtime:
- *   - `taskQueue` defaults to "openrouter" (n8n: "n8n", Python: "langchain")
- *   - credentials are carried here, since there is no n8n credential store
+ *   - `taskQueue` defaults to "openrouter"
+ *   - credentials are carried here, since there is no host credential store
  *   - `instrumentHttp` stays on: it is what makes the model call to
  *     OpenRouter itself visible as an http_request span, and it is the ONLY
  *     pre-response enforcement point for a model call (the OpenRouter Agent
@@ -130,7 +130,7 @@ function envNumber(name: string): number | undefined {
  */
 export const DEFAULT_APPROVAL_MAX_WAIT_MS = 60 * 60 * 1000;
 
-/** merge_config() — mirrors openbox_langgraph.config.merge_config */
+/** Merge caller options with environment defaults into a resolved config. */
 export function mergeConfig(opts: OpenBoxOpenRouterOptions): GovernanceConfig {
   const databases =
     opts.databases ??
@@ -159,8 +159,8 @@ export function mergeConfig(opts: OpenBoxOpenRouterOptions): GovernanceConfig {
           ? opts.hitl.timeoutMs
           : envNumber('OPENBOX_HITL_TIMEOUT_MS') ?? DEFAULT_APPROVAL_MAX_WAIT_MS,
     },
-    // HTTP instrumentation is always on (mirrors the Python SDK wiring httpx
-    // by default). File IO is off — file reads are almost always
+    // HTTP instrumentation is always on (HTTP is the transport every provider call
+    // uses). File IO is off — file reads are almost always
     // credential/config, not user data worth governing.
     instrumentHttp: opts.instrumentHttp ?? true,
     captureRequestObjectBody: opts.captureRequestObjectBody ?? false,

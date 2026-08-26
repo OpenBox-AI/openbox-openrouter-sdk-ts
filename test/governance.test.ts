@@ -218,7 +218,7 @@ describe('createOpenBoxGovernance — prompt redaction', () => {
           }
         : { arm: 'allow' };
 
-    // Redaction is applied by handleWrapModelCall in the n8n port; here the
+    // Redaction is applied by handleWrapModelCall; here the
     // binding owns `request.input`, so assert on what the engine received.
     const openbox = createOpenBoxGovernance(baseOptions(transport));
     let seenInput: unknown;
@@ -438,7 +438,7 @@ describe('createOpenBoxGovernance — engine failure', () => {
 describe('createOpenBoxGovernance — event ordering', () => {
   /**
    * The session log must be a FLAT sequence — llm_call, tool, llm_call — the
-   * same shape the n8n node produces. An earlier version opened the next
+   * shape a reviewer expects. An earlier version opened the next
    * llm_call at PreToolUse, which nested the tool's activity inside the model
    * call's and made the dashboard read as though the tool had executed
    * mid-call. Caught by reading a real session log, not by this suite.

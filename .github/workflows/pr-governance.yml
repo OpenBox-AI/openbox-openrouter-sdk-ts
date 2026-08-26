@@ -1,0 +1,77 @@
+name: PR Governance
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-governance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  governance:
+    name: Validate PR governance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate branch naming
+        if: github.event_name == 'pull_request'
+        env:
+          BRANCH_NAME: ${{ github.head_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pattern='^(feat|fix|hotfix|chore|docs|refactor|test|ci|build|release)\/[a-z0-9._-]+$'
+          if [[ ! "${BRANCH_NAME}" =~ ${pattern} ]]; then
+            echo "Invalid branch name: ${BRANCH_NAME}"
+            echo "Expected pattern: <type>/<short-description>"
+            exit 1
+          fi
+
+      - name: Validate PR title convention
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pattern='^(feat|fix|chore|docs|refactor|test|build|ci|perf|revert)(\([a-z0-9._/-]+\))?!?: .+$'
+          if [[ ! "${PR_TITLE}" =~ ${pattern} ]]; then
+            echo "Invalid PR title: ${PR_TITLE}"
+            echo "Expected conventional commits format: <type>(<scope>): <description>"
+            exit 1
+          fi
+
+      - name: Verify required files exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_files=(
+            "package.json"
+            "package-lock.json"
+            "tsconfig.json"
+            "README.md"
+            "LICENSE"
+            "SECURITY.md"
+            "CODE_OF_CONDUCT.md"
+          )
+          for file in "${required_files[@]}"; do
+            if [ ! -f "${file}" ]; then
+              echo "Missing required file: ${file}"
+              exit 1
+            fi
+          done
+          echo "All required governance files present."

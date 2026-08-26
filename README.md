@@ -1,5 +1,9 @@
 # openbox-openrouter-governance
 
+[![PR Quality](https://github.com/OpenBox-AI/openbox-openrouter-sdk-ts/actions/workflows/pr-quality.yml/badge.svg)](https://github.com/OpenBox-AI/openbox-openrouter-sdk-ts/actions/workflows/pr-quality.yml)
+[![npm](https://img.shields.io/npm/v/openbox-openrouter-governance.svg)](https://www.npmjs.com/package/openbox-openrouter-governance)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
 Governance and observability for the [OpenRouter Agent SDK](https://openrouter.ai/docs/agent-sdk)
 (`@openrouter/agent`), backed by [OpenBox](https://openbox.ai) Core.
 
@@ -14,14 +18,9 @@ callModel ──▶ WorkflowStarted ──▶ llm_call ──▶ tool ──▶ 
                     └── every one evaluated, recorded, and enforceable ──┘
 ```
 
-This is a port of the governance layer inside the n8n OpenBox node. The wire
-protocol, event names, verdict enforcement, HITL polling and span
-instrumentation are the same logic; only two host-specific seams differ:
-
-| Seam | n8n node | here |
-|---|---|---|
-| HTTP transport | `IExecuteFunctions.helpers.httpRequest` | `fetch` + AIP signing (`transport.ts`) |
-| Agent loop | the node drives the middleware itself | `@openrouter/agent` drives it via `openrouter.ts` |
+Governance is enforced where the decision still matters — before a tool runs,
+before the next model call goes out, and while a human decides — and everything
+the run does is recorded against the session it belongs to.
 
 ---
 
@@ -114,11 +113,11 @@ Denial, expiry and client-side timeout of an approval all surface as
 
 ## What gets governed
 
-| n8n middleware method | Attached here via | Enforcing? |
+| Lifecycle stage | Attached via | Enforcing? |
 |---|---|---|
 | `beforeAgent` — WorkflowStarted + SignalReceived | awaited inside `callModel()`, before the request goes out | **yes** — block/halt aborts, `require_approval` polls, guardrails redact the prompt |
 | `wrapModelCall` — LLMStarted → model → LLMCompleted | LLMStarted pre-screen before each model call; LLMCompleted on `PostModelCall` | **partly** — see below |
-| `wrapToolCall` — ToolStarted → tool → ToolCompleted | `openbox.tools()` wraps each tool's `execute`/`run` | **yes** — full parity, including holding the call open across a human approval |
+| `wrapToolCall` — ToolStarted → tool → ToolCompleted | `openbox.tools()` wraps each tool's `execute`/`run` | **yes** — including holding the call open across a human approval |
 | `afterAgent` — WorkflowCompleted | `SessionEnd` hook | n/a (observational by definition) |
 | HTTP / DB span capture | `span_processor.ts` + `node_instrumentation.ts` | **yes** — spans are evaluated mid-flight and can abort the call |
 
@@ -299,3 +298,18 @@ policy at a tool (the SDK sends a tool's name as `activity_type`) and checking
 both what the agent did and what Core recorded: a blocked tool must not run, a
 halted run must not answer, and an approval must hold the call open until it is
 decided.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, branch and PR conventions,
+and what a change needs before it lands. Releases are cut by bumping the
+version on `main` — see [RELEASING.md](./RELEASING.md).
+
+Security issues go to **security@openbox.ai**, not to a public issue — see
+[SECURITY.md](./SECURITY.md).
+
+## License
+
+[Apache-2.0](./LICENSE)

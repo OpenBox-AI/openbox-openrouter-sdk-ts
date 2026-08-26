@@ -1,9 +1,8 @@
 /**
- * GovernanceClient — port of the n8n node's `shared/langchain/client.ts`.
+ * GovernanceClient — the typed calls this SDK makes to OpenBox Core.
  *
- * Identical wire behavior; the only change is the transport. The n8n version
- * delegates to `openboxRequest(executeFunctions, …)` so calls surface in n8n's
- * execution UI — here it holds an {@link OpenBoxTransport} instead.
+ * It holds an {@link OpenBoxTransport}, so a host that owns its own HTTP
+ * stack can supply one and keep these calls inside its own plumbing.
  */
 
 import type { OpenBoxTransport } from './transport';
@@ -13,7 +12,7 @@ import { GovernancePatch, GovernanceVerdictResponse, OpenBoxGovernanceEvent } fr
 export type OnApiError = 'fail_open' | 'fail_closed';
 
 /**
- * Mirrors openbox_langgraph.types.to_server_event_type().
+ * 
  *
  * The OpenBox Core API only accepts the Temporal SDK's canonical event types
  * (ActivityStarted, ActivityCompleted, WorkflowStarted, …). SDK-specific names
@@ -65,7 +64,7 @@ export class GovernanceClient {
   private readonly timeoutMs?: number;
   /**
    * Exposed so span_processor can post hook-level ActivityStarted events
-   * through the same transport (mirrors Python's hook_governance sharing the
+   * through the same transport (one client, one transport, so hook spans and
    * governance client's httpx session).
    */
   readonly transport: OpenBoxTransport;
@@ -116,7 +115,7 @@ export class GovernanceClient {
     onApiError: OnApiError = 'fail_open',
   ): Promise<ApprovalPollResponse | null> {
     // If Core returned an approval_id in the evaluate response, use it as the
-    // poll key (mirrors the Python SDK's exc.action_id pattern). Otherwise
+    // poll key (Core returns it on the verdict). Otherwise
     // fall back to the triple (workflow_id, run_id, activity_id).
     const pollKey = approvalId ?? activityId;
     const reqBody = approvalId

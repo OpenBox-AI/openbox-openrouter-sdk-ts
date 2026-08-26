@@ -1,10 +1,9 @@
 /**
  * Core types for the OpenBox OpenRouter governance SDK.
  *
- * Ported verbatim from the n8n node's `shared/langchain/types.ts`, which in
- * turn mirrors openbox_langgraph/types.py — identical field names so events
- * are interchangeable with the Python SDK and Core classifies them the same
- * way. Do not "tidy" a field name here without changing every SDK.
+ * Wire types for the governance event stream, which in
+ * use the field names Core classifies on, so events from any OpenBox SDK are
+ * interchangeable. Do not "tidy" a field name here without changing every SDK.
  */
 
 import { createHash, randomBytes } from 'crypto';
@@ -58,7 +57,7 @@ export interface GovernanceVerdictResponse {
 
 /**
  * Structured error shape required by Core — a bare string in the `error` field
- * of a lifecycle event is rejected. Mirrors openbox-langchain-sdk-ts's ErrorInfo.
+ * of a lifecycle event is rejected.
  */
 export interface ErrorInfo {
   type: string;
@@ -67,8 +66,8 @@ export interface ErrorInfo {
 }
 
 /**
- * Mirrors the LangChainGovernanceEvent dataclass. All optional fields that are
- * not always present are left optional so partial construction is ergonomic.
+ * One governance event on the wire. Optional fields that are not always
+ * present are left optional so partial construction is ergonomic.
  */
 export interface OpenBoxGovernanceEvent {
   source: 'workflow-telemetry';
@@ -105,7 +104,7 @@ export interface OpenBoxGovernanceEvent {
   // Tool events
   tool_name?: string;
   tool_type?: string;
-  // OTel hook layer (Layer 2) — mirrors Python SDK hook_governance._build_payload()
+  // OTel hook layer (Layer 2) — span-carrying events
   hook_trigger?: boolean;
   /**
    * Position of this event within its run, 1-based and gapless. Makes the
@@ -115,7 +114,7 @@ export interface OpenBoxGovernanceEvent {
   [key: string]: unknown;
 }
 
-/** rfc3339_now() — mirrors openbox_langgraph.types.rfc3339_now */
+/** Timestamp in the RFC 3339 form Core parses. */
 export function rfc3339Now(): string {
   return new Date().toISOString();
 }
@@ -211,13 +210,7 @@ export function stableSpanId(seed: string): string {
   return createHash('sha256').update(seed).digest('hex').slice(0, 16);
 }
 
-/** Crypto-random hex ID. Mirrors uuid.uuid4().hex in Python. */
+/** Crypto-random hex ID. */
 export function hexId(len: number = 32): string {
   return randomBytes(Math.ceil(len / 2)).toString('hex').slice(0, len);
 }
-
-/**
- * Back-compat alias. The n8n port names this type `LangChainGovernanceEvent`;
- * code moved between the two packages keeps compiling.
- */
-export type LangChainGovernanceEvent = OpenBoxGovernanceEvent;

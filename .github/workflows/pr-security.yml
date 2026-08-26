@@ -1,0 +1,115 @@
+name: PR Security
+
+env:
+  GITLEAKS_VERSION: "8.30.0"
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  security-events: write
+
+concurrency:
+  group: pr-security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trivy-scan:
+    name: Trivy Dependency Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@e07451d2e059ed86c2870430ea286b3a9e0bf241
+        with:
+          cache: true
+          version: v0.69.2
+
+      - name: Run Trivy filesystem scan (console)
+        id: trivy_console
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          trivy fs . \
+            --scanners vuln \
+            --vuln-type library \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --skip-dirs node_modules \
+            --format table \
+            --exit-code 1
+
+      - name: Run Trivy filesystem scan (SARIF)
+        if: always()
+        shell: bash
+        run: |
+          trivy fs . \
+            --scanners vuln \
+            --vuln-type library \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --skip-dirs node_modules \
+            --format sarif \
+            --output trivy-results.sarif \
+            --exit-code 0
+
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-pr
+
+      - name: Fail on vulnerabilities
+        if: steps.trivy_console.outcome == 'failure'
+        run: |
+          echo "Trivy found HIGH/CRITICAL vulnerabilities in dependencies."
+          exit 1
+
+  gitleaks-scan:
+    name: Gitleaks Secret Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Run Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          gitleaks dir . \
+            --no-banner \
+            --exit-code 1 \
+            --report-format sarif \
+            --report-path gitleaks-results.sarif
+
+      - name: Upload Gitleaks SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gitleaks-results.sarif
+          category: gitleaks-pr

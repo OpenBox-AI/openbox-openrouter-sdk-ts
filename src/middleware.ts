@@ -1,6 +1,5 @@
 /**
- * OpenBoxOpenRouterMiddleware — port of the n8n node's
- * `shared/langchain/middleware.ts`.
+ * OpenBoxOpenRouterMiddleware — the governance lifecycle for one agent.
  *
  * Exposes the same five lifecycle methods (beforeAgent / afterAgent /
  * wrapModelCall / wrapToolCall / wrapMemoryOp) as plain async functions. The
@@ -11,7 +10,7 @@
  * Turn identity (workflowId/runId) is NEVER stored as mutable state on this
  * instance — beforeAgent() returns a `Turn` value the caller threads through
  * every subsequent call. Identity living on a shared/reused instance is
- * exactly what a concurrent-run refactor would clobber, and unlike n8n (one
+ * exactly what a concurrent-run refactor would clobber, and unlike a host with one
  * node execution at a time) an OpenRouter agent process routinely has several
  * sessions in flight against one middleware.
  */

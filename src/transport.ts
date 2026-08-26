@@ -1,10 +1,8 @@
 /**
- * Standalone HTTP transport — the one seam the n8n node fulfils with
- * `IExecuteFunctions.helpers.httpRequest` (so requests show up in n8n's
- * execution UI). Outside n8n there is no host to delegate to, so this module
- * owns the request itself: `fetch` + AIP request signing.
+ * HTTP transport: `fetch` plus AIP request signing. A host that already owns
+ * an HTTP stack can inject its own instead — see `OpenBoxTransport`.
  *
- * Error taxonomy is identical to the n8n port's `openbox-client.ts`:
+ * Error taxonomy:
  *   - 401/403             → GovernanceAuthError, ALWAYS hard-fails
  *   - anything else       → SoftGovernanceError, subject to `onApiError`
  * Nothing else may escape `request()`, or a fail-open deployment would start
@@ -38,7 +36,7 @@ export interface OpenBoxRequestOptions {
 /**
  * The narrow contract span_processor / GovernanceClient depend on. Kept as an
  * interface (not a concrete class) so a host that already owns an HTTP stack
- * — n8n, a proxy, a test double — can supply its own without this package
+ * — a proxy, a test double, a host framework — can supply its own without this package
  * reaching for `fetch`.
  */
 export interface OpenBoxTransport {
@@ -78,7 +76,7 @@ export const DEFAULT_OPENBOX_URL = 'https://core.openbox.ai';
 
 /**
  * Resolve credentials from explicit options, falling back to the standard
- * OPENBOX_* environment variables. Mirrors the n8n credential fields.
+ * OPENBOX_* environment variables.
  */
 export function resolveCredentials(partial: Partial<OpenBoxCredentials> = {}): OpenBoxCredentials {
   const env = process.env;
@@ -99,8 +97,8 @@ export function resolveCredentials(partial: Partial<OpenBoxCredentials> = {}): O
 
 /**
  * `fetch`-backed transport. One instance per middleware; credentials are
- * resolved once at construction rather than per request (the n8n port
- * re-reads them each call because n8n owns credential rotation; here the
+ * resolved once at construction rather than per request (a host that owns
+ * credential rotation would re-read them each call; here the
  * process lifetime is the credential lifetime).
  */
 export class FetchTransport implements OpenBoxTransport {

@@ -1,5 +1,5 @@
 /**
- * Tool governance hook — TypeScript port of middleware_tool_hook.py.
+ * Tool governance hook: ToolStarted → execute → ToolCompleted.
  *
  * handle_wrap_tool_call: ToolStarted → execute tool → ToolCompleted.
  */
@@ -91,7 +91,7 @@ export async function handleWrapToolCall(
     while (true) {
       try {
         toolResult = await runWithActivity(activityId, handler);
-        // Some LangChain tools (e.g. Wikipedia) catch HTTP errors internally and
+        // Some tools catch HTTP errors internally and
         // return them as strings rather than throwing. The hook still set the abort
         // flag before throwing — check it here so approval is triggered even when
         // the GovernanceBlockedError never propagated to this catch block.

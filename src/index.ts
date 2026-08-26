@@ -1,7 +1,7 @@
 /**
  * OpenBox governance for the OpenRouter Agent SDK.
  *
- * Public surface mirrors the n8n node's `shared/langchain/index.ts`, plus the
+ * Public surface, plus the
  * `openrouter.ts` binding that attaches the middleware to `@openrouter/agent`.
  */
 

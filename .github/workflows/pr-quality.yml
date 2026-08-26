@@ -1,0 +1,93 @@
+name: PR Quality
+
+env:
+  NODE_VERSION: "22"
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Verify pack contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_output=$(npm pack --dry-run 2>&1)
+          echo "$pack_output"
+          # dist/ is what consumers actually import — publishing without it
+          # produces a package that installs cleanly and then fails on require.
+          if ! echo "$pack_output" | grep -q "dist/"; then
+            echo "ERROR: dist/ not found in pack output — run 'npm run build' first"
+            exit 1
+          fi
+          if echo "$pack_output" | grep -qE "\.env|\.pem"; then
+            echo "ERROR: pack contains a credential-shaped file"
+            exit 1
+          fi
+          echo "Pack contents look correct."
+
+  demo:
+    name: Demo agent type-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Build the SDK the demo links to
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install and type-check the demo
+        working-directory: demo-agent
+        run: |
+          npm install --no-audit --no-fund
+          npx tsc --noEmit

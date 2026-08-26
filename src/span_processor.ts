@@ -1,15 +1,12 @@
 /**
- * HTTP span collector — port of the n8n node's
- * `shared/langchain/span_processor.ts`, itself a port of otel_setup.py +
- * http_governance_hooks.py + the relevant parts of WorkflowSpanProcessor.
+ * HTTP span collector.
  *
- * The Python SDK intercepts HTTP calls via OTel httpx instrumentation and patches
- * httpx.Client.send. In Node.js 18+, the OpenRouter SDK reaches the provider over
- * the native fetch API (undici). We patch the global fetch the same way Python patches
- * httpx.Client.send — capturing request/response bodies and posting
- * ActivityStarted + hook_trigger + http_request spans to Core.
+ * In Node.js 18+, the OpenRouter SDK reaches the provider over the native fetch
+ * API (undici), so the global fetch is patched — capturing request/response
+ * bodies and posting ActivityStarted + hook_trigger + http_request spans to
+ * Core. `node:http`/`node:https` are patched too, for clients that bypass fetch.
  *
- * Flow (mirrors Python SDK):
+ * Flow:
  *   1. wrapModelCall calls registerActivity(activityId, activityContext, ...)
  *      → mirrors span_processor.set_activity_context()
  *   2. Patched fetch fires on the actual LLM HTTP call
@@ -81,7 +78,7 @@ const _approvedActivities = new Set<string>();
  * The activity an operation's HTTP/DB calls belong to.
  *
  * Stored as a resolver rather than a bare id so a scope can span an activity
- * that is REPLACED partway through. The n8n node never needs this — one
+ * that is REPLACED partway through. A single-turn host never needs this — one
  * `runWithActivity` call wraps one model call with one id. Driving an engine
  * that owns its own loop does: a single consumption of the result spans
  * several model turns, each with its own llm_call id, so the scope has to ask
@@ -217,7 +214,7 @@ export function buildHttpSpanData(opts: {
     ? `${opts.method} ${opts.url} ${opts.statusCode}`
     : `${opts.method} ${opts.url}`;
 
-  // start_time: for "completed" spans use end timestamp (mirrors Python SDK §5.6)
+  // start_time: for "completed" spans use end timestamp 
   const spanStartNs = opts.stage === 'completed' ? (endNs ?? startNs) : startNs;
   const genAiSystem = detectGenAiSystem(opts.url);
 
@@ -259,9 +256,8 @@ export function buildHttpSpanData(opts: {
       // Status must ride in `attributes`, not only as the root http_status_code
       // field: Core maps the root http_* fields to NO span column (they land in
       // the opaque `data` blob) while `attributes` is what it persists and the
-      // dashboard renders. Key and placement follow openbox-executor's
-      // telemetry._http_attributes — OTel's `http.status_code`, and only on the
-      // completed stage, where a status first exists.
+      // dashboard renders. OTel's `http.status_code`, and only on the completed
+      // stage, where a status first exists.
       ...(opts.statusCode != null ? { 'http.status_code': opts.statusCode } : {}),
       // Deliberately NOT 'gen_ai.system'. Core's classifyLLMGenAI
       // (content/session.go) returns semantic type 'llm_gen_ai' for ANY span
@@ -269,12 +265,10 @@ export function buildHttpSpanData(opts: {
       // LLM host Core doesn't know (openrouter.ai is absent from its llmDomains
       // list) lands on 'llm_gen_ai'. The dashboard's llm_gen_ai branch hardcodes
       // statusCode: null, so the status pill silently vanished for model calls
-      // while ordinary HTTP tools kept theirs. openbox-executor's
-      // telemetry._http_attributes sends only method/url/status for the same
-      // reason; the provider still travels as the root gen_ai_system field.
+      // while ordinary HTTP tools kept theirs. Only method/url/status travel in
+      // attributes; the provider rides the root gen_ai_system field.
     },
-    // UNSET while running; OK/ERROR once the call has actually finished —
-    // matches openbox-executor's span builder.
+    // UNSET while running; OK/ERROR once the call has actually finished.
     status: opts.stage === 'started'
       ? { code: 'UNSET', description: null }
       : { code: error ? 'ERROR' : 'OK', description: error },
@@ -282,9 +276,9 @@ export function buildHttpSpanData(opts: {
     hook_type: 'http_request',
     // Advisory only — Core recomputes semantic_type for every span
     // (governance_workflow.go -> ComputeSemanticTypeFromSpan), so this does not
-    // decide the label today. Sent anyway because it is Core's own vocabulary
-    // and openbox-executor declares it the same way, which makes the intent
-    // explicit and takes effect if Core ever honours the declared value.
+    // decide the label today. Sent anyway because it is Core's own vocabulary,
+    // which makes the intent explicit and takes effect if Core ever honours the
+    // declared value.
     ...(genAiSystem != null ? { semantic_type: 'llm_completion' } : {}),
     http_method: opts.method,
     http_url: opts.url,
@@ -295,7 +289,7 @@ export function buildHttpSpanData(opts: {
     response_headers: null,
     http_status_code: opts.statusCode,
     error,
-    // Injected by Python's _build_payload for server-side correlation
+    // Carried on the span for server-side correlation
     activity_id: opts.activityId,
   };
 }
@@ -497,7 +491,7 @@ export function getCurrentActivityId(): string | undefined {
  * Polling happens INLINE here — before evaluateHookSpan/enforceHookVerdict
  * ever throws — so require_approval never surfaces as an exception out of
  * the patched fetch/query call. This matters because that call runs inside
- * the LLM/DB client's own retry wrapper (e.g. LangChain's AsyncCaller), which
+ * the LLM/DB client's own retry wrapper (e.g. a client's retry wrapper), which
  * has no notion of "this error means poll and retry" — it just sees an
  * unrecognized error and burns through its own retry budget with exponential
  * backoff, or gives up and surfaces a generic failure, before our HITL logic
@@ -869,8 +863,8 @@ function patchHttpModule(moduleName: 'node:http' | 'node:https'): boolean {
           // already drained AND ended. Handing that exhausted object straight
           // to the caller means its own 'data'/'end' listeners — attached one
           // tick too late — never fire, and the request hangs until the
-          // caller's timeout (n8n's HTTP nodes sit on axios, which is exactly
-          // this shape: "Response body timed out ... without data"). So detach
+          // caller's timeout (axios-based clients fail in exactly this shape:
+          // "Response body timed out ... without data"). So detach
           // our listener and replay the buffered body once the caller has had
           // a chance to subscribe. Object identity is preserved deliberately —
           // substituting a PassThrough would drop IncomingMessage fields that
@@ -1048,8 +1042,8 @@ function patchHttpModule(moduleName: 'node:http' | 'node:https'): boolean {
  * response body (observability/model.go -> extractTokenUsage), which fails
  * outright on that framing — so every OpenRouter run reported zero tokens and
  * no model, even though the numbers were sitting in the stream's terminal
- * `response.completed` event. The n8n port never hit this because LangChain
- * uses the non-streaming chat-completions endpoint, whose body already is JSON.
+ * `response.completed` event. A client using the non-streaming
+ * chat-completions endpoint never hits this — that body already is JSON.
  *
  * The terminal event's `response` object carries `model` and `usage` in
  * exactly the shape Core parses, so that is what gets stored. Anything that is
@@ -1175,7 +1169,7 @@ export function extractAssistantText(body: string | null): string | null {
     }
   }
 
-  // Chat-completions — non-streaming providers, and the n8n port's shape.
+  // Chat-completions — the non-streaming providers' shape.
   if (parts.length === 0 && Array.isArray(root.choices)) {
     for (const choice of root.choices) {
       if (choice == null || typeof choice !== 'object') continue;
@@ -1314,9 +1308,8 @@ export function setupSpanProcessorInstrumentation(options: { http?: boolean } = 
  * Register an LLM activity so outgoing fetch calls during its execution
  * are captured as http_request spans and sent to Core.
  *
- * Mirrors Python's:
- *   span_processor.set_activity_context(workflow_id, activity_id, context)
- *   span_processor.register_trace(trace_id, workflow_id, activity_id)
+ * Registers the activity context and its trace so spans made inside it are
+ * attributed to the right activity.
  */
 export function registerActivity(
   activityId: string,
@@ -1339,7 +1332,7 @@ export function registerActivity(
 
 /**
  * Run a governed operation in an async-local activity scope.
- * Mirrors Python's trace_id → workflow/activity lookup without relying on
+ * Resolves the owning activity from async-local state rather than relying on
  * whichever registered activity happens to be first in the map.
  */
 export async function runWithActivity<T>(
@@ -1435,7 +1428,7 @@ export function isActivityApproved(activityId: string): boolean {
 
 /**
  * Unregister an LLM activity after the model call completes.
- * Mirrors Python's span_processor.clear_activity_context().
+ * 
  */
 export async function unregisterActivity(activityId: string): Promise<void> {
   // Drain first: dropping the registration while completion spans are still in
@@ -1464,7 +1457,7 @@ export async function unregisterActivity(activityId: string): Promise<void> {
 
 /**
  * Remove all lingering activity registrations for a completed workflow.
- * Mirrors Python's span_processor.unregister_workflow(workflow_id).
+ * 
  * Called from handleAfterAgent as a safety net — individual activities should
  * already be cleaned up by their own unregisterActivity() calls.
  */

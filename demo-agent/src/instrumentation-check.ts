@@ -23,7 +23,7 @@ const dbLookup = tool({
   execute: async ({ table }: { table: string }) => {
     log('tool', `db_lookup(${table}) — real Postgres query`);
     const c = new PgClient({
-      host: 'localhost', port: 5433, user: 'n8n', password: 'n8n', database: 'n8n',
+      host: 'localhost', port: 5432, user: 'postgres', password: 'password', database: 'postgres',
     });
     await c.connect();
     try {

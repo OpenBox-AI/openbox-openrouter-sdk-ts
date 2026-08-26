@@ -1,4 +1,4 @@
-/* eslint-disable @n8n/community-nodes/require-node-api-error, prefer-rest-params, @typescript-eslint/no-unused-vars */
+/* eslint-disable prefer-rest-params, @typescript-eslint/no-unused-vars */
 import type * as Fs from 'node:fs';
 
 // Access process.env via require() indirection to avoid the no-restricted-globals
@@ -27,7 +27,7 @@ export interface NodeInstrumentationOptions {
 
 const noopLogger: Logger = { warn: () => {} };
 
-// Skip system/internal paths — mirrors Python SDK's file skip patterns.
+// Skip system/internal paths — never the agent's own work.
 const FILE_SKIP_PATTERNS = ['/dev/', '/proc/', '/sys/', '/node_modules/'];
 
 function shouldSkipFilePath(path: string): boolean {
@@ -158,7 +158,7 @@ async function evaluateDb(
 
 /**
  * Wrap a fs.promises FileHandle to track open→read/write→close as a single
- * lifecycle span. Mirrors Python SDK's TracedFile wrapper.
+ * lifecycle span. One span covers the whole open→read/write→close lifecycle.
  */
 function wrapFileHandle(
   handle: Record<string, unknown>,
@@ -265,7 +265,7 @@ function patchFsPromises(fs: typeof Fs): void {
   }
 
   // Patch open() for open→operations→close lifecycle.
-  // Mirrors Python SDK's TracedFile wrapper.
+  // One span covers the whole open→read/write→close lifecycle.
   const originalOpen = promises.open as ((this: unknown, ...a: unknown[]) => Promise<Record<string, unknown>>) | undefined;
   if (typeof originalOpen === 'function') {
     promises.open = async function patchedOpen(this: unknown, path: unknown, ...openArgs: unknown[]) {
@@ -424,11 +424,10 @@ function patchFromRequireCache(
 }
 
 function patchPg(): boolean {
-  // n8n loads pg from its own node_modules, which may be at a different resolved
-  // path than what require('pg') resolves to from this custom node's location.
-  // Scanning require.cache finds the pg module that is actually in use, regardless
-  // of install path, and ensures we patch the same prototype that n8n's memory
-  // node is calling.
+  // The host application loads pg from its own node_modules, which may resolve
+  // to a different path than require('pg') does from this package's location.
+  // Scanning require.cache finds the pg module actually in use, regardless of
+  // install path, so the patched prototype is the one the caller is calling.
   let patched = false;
   try {
     const cache = (require as unknown as { cache: Record<string, { exports: unknown }> }).cache;
@@ -451,52 +450,6 @@ function patchPg(): boolean {
 }
 
 /**
- * Frames belonging to n8n's own persistence layer.
- *
- * n8n routes every internal database access through its TypeORM fork, and the
- * agent's work never goes through it — a traced run separates 17/17 correctly
- * on this signal: n8n's credential lookups and TypeORM's own `SET search_path`
- * / `SET statement_timeout` on one side, the agent's chat-memory queries on the
- * other.
- *
- * Deliberately matches the `@n8n/typeorm` fork rather than any TypeORM: a tool
- * querying its own database through vanilla TypeORM is the agent's work and
- * must still be traced.
- */
-const N8N_ORM_FRAME = /[\\/]@n8n[\\/]typeorm[\\/]/;
-
-/** True when this stack shows the query came from n8n's own ORM. */
-export function isN8nOrmStack(stack: string): boolean {
-  return N8N_ORM_FRAME.test(stack);
-}
-
-/**
- * True when the caller is n8n's own persistence layer rather than the agent.
- *
- * Replaces an earlier check that compared the *connection* against the
- * DB_POSTGRESDB_* env vars. That could not work when the agent and n8n share a
- * database — n8n's own compose setup points a Postgres chat memory at exactly
- * that database — and it silently dropped every memory span: a run whose agent
- * issued 5 memory queries reported none of them. Call origin is independent of
- * host, database and table naming, so it holds however the deployment is wired.
- *
- * Costs one stack capture per query, and only inside a governed activity: the
- * caller checks `getCurrentActivityId()` before reaching here.
- *
- * If an async boundary ever drops the ORM frame, an n8n query surfaces as one
- * stray span — visible and fixable. It cannot silently swallow agent data,
- * which is the failure the connection check produced.
- */
-function isN8nOrmQuery(): boolean {
-  const previousLimit = Error.stackTraceLimit;
-  // The ORM frame sits a few frames up, past pg's own internals.
-  Error.stackTraceLimit = 40;
-  const stack = new Error().stack ?? '';
-  Error.stackTraceLimit = previousLimit;
-  return isN8nOrmStack(stack);
-}
-
-/**
  * Report a *failed* connection attempt as a span pair.
  *
  * Only failures are reported. Connection establishment was previously not
@@ -510,9 +463,9 @@ function isN8nOrmQuery(): boolean {
  * round-trip. A successful connection carries no information the queries on it
  * do not already carry, so only the failure is worth a span.
  *
- * Deliberately fire-and-forget: connections open while n8n initialises a
- * sub-node, and every governance request itself loads a credential — awaiting
- * there produced a governance/credential/query recursion once already.
+ * Deliberately fire-and-forget: connections open during host initialisation,
+ * and a governance request may itself open one — awaiting here produced a
+ * governance/connection/query recursion once already.
  */
 function reportFailedConnect(
   dbSystem: string,
@@ -563,8 +516,9 @@ export function patchConnectMethod(
     } catch {
       conn = {};
     }
-    // n8n's own pools connect through its ORM; those are not the agent's work.
-    if (isN8nOrmQuery() || (skip?.(conn) ?? false)) return call();
+    // A caller-supplied predicate can exclude connections that are not the
+    // agent's work (a host's own pooling, for instance).
+    if (skip?.(conn) ?? false) return call();
 
     const startMs = Date.now();
     const fail = (err: unknown) => reportFailedConnect(dbSystem, conn, startMs, err);
@@ -624,7 +578,7 @@ function patchPgExports(pg: Record<string, unknown>): boolean {
     // ONLY Client.prototype, for the same reason the query patch below gives:
     // Pool.connect() acquires a client and delegates to Client.connect(), so
     // patching both reports one connection attempt TWICE. A pooled memory read
-    // showed two CONNECT failures per activity when n8n had made one attempt.
+    // showed two CONNECT failures per activity for a single real attempt.
     // Patching the client alone covers pooled and direct connections exactly
     // once.
     if (pgAny.Client?.prototype) {
@@ -656,9 +610,8 @@ function patchPgExports(pg: Record<string, unknown>): boolean {
         const port = self.port ?? self.options?.port ?? self.connectionParameters?.port;
         const dbName = self.database ?? self.options?.database ?? self.connectionParameters?.database;
 
-        // n8n's own bookkeeping (credential lookups during node init) is not
-        // the agent's work; the agent's queries on the same database are.
-        if (isN8nOrmQuery()) return original.call(self, query, ...args);
+        // A host's own bookkeeping queries are not the agent's work; the
+        // agent's queries on the same database are.
 
         const dbOpts = {
           dbSystem: 'postgresql' as const,
@@ -673,9 +626,9 @@ function patchPgExports(pg: Record<string, unknown>): boolean {
           void evaluateDb(activityId, { ...dbOpts, stage: 'started', startMs }, { gate: false });
           // Wrap the caller's callback so the query still reports a 'completed'
           // span. Without this, callback-style pg.query() emitted a start and
-          // nothing else — n8n's Postgres nodes use exactly this form, so
-          // activities like a tool's SELECT/INSERT showed an unmatched
-          // ActivityStarted and never closed. Mirrors the mysql2 patch below.
+          // nothing else — callers using this form left a tool's SELECT/INSERT
+          // showing an unmatched ActivityStarted that never closed. Mirrors the
+          // mysql2 patch below.
           const cbIndex = args.length - 1;
           const originalCb = args[cbIndex] as (...cbArgs: unknown[]) => unknown;
           args[cbIndex] = function patchedPgCallback(this: unknown, err: unknown, result: unknown) {
@@ -793,12 +746,10 @@ export function patchMysql2Exports(mysql2: Record<string, unknown>): boolean {
           try {
             const c = (this.config ?? {}) as { host?: string; port?: number; database?: string };
             const conn = { host: c.host ?? null, port: c.port ?? null, dbName: c.database ?? null };
-            if (!isN8nOrmQuery()) {
-              // The attempt started when the connection was constructed;
-              // `connectedAt` is not exposed, so the span is stamped from now
-              // and carries a duration of ~0 rather than a fabricated one.
-              reportFailedConnect('mysql', conn, Date.now(), rest[0]);
-            }
+            // The attempt started when the connection was constructed;
+            // `connectedAt` is not exposed, so the span is stamped from now
+            // and carries a duration of ~0 rather than a fabricated one.
+            reportFailedConnect('mysql', conn, Date.now(), rest[0]);
           } catch {
             // reporting must never break the driver's own error path
           }
@@ -1027,8 +978,8 @@ function patchMongoExports(mongodb: Record<string, unknown>): boolean {
  * ioredis exposes them flat on `options`; node-redis v4 nests the address under
  * `options.socket` and calls the database `database`. The patch used to hardcode
  * host 'unknown' / port 6379 / db '0', which made every redis span claim a
- * connection it had never checked — and left no way to tell n8n's queue Redis
- * apart from a Redis the agent actually uses.
+ * connection it had never checked — and left no way to tell one Redis apart
+ * from another.
  */
 export function redisConnectionInfo(client: unknown): {
   host: string | null;
@@ -1055,43 +1006,6 @@ export function redisConnectionInfo(client: unknown): {
 }
 
 /**
- * True when this connection is n8n's own Bull queue Redis.
- *
- * In queue mode n8n runs a main + worker pair coordinated through Redis. Because
- * the sendCommand patch sits on the driver prototype and AsyncLocalStorage
- * propagates down the whole call stack, every queue heartbeat, job poll and
- * pub/sub message n8n makes *while an activity is open* inherits our activity
- * scope and used to be reported as an agent span. A hosted trace for a workflow
- * whose only memory was Postgres came back with five of seven spans being
- * redis — none of them the agent's work.
- *
- * Matches host AND port, mirroring the pg filter's AND semantics so
- * a different Redis on the same host is still traced.
- */
-export function isN8nQueueRedisConnection(
-  host: string | null | undefined,
-  port: number | null | undefined,
-): boolean {
-  if ((_env.EXECUTIONS_MODE || '').toLowerCase() !== 'queue') return false;
-  const queueHost = (_env.QUEUE_BULL_REDIS_HOST || 'localhost').toLowerCase();
-  const queuePort = Number(_env.QUEUE_BULL_REDIS_PORT || 6379);
-  return (
-    Boolean(host) && host!.toLowerCase() === queueHost &&
-    port != null && Number(port) === queuePort
-  );
-}
-
-/**
- * True when the command itself targets n8n-internal keys or channels.
- *
- * Backstop for the connection check above: when the queue Redis and a Redis the
- * agent uses are the same instance, host/port cannot separate them, but the keys
- * still can. Bull namespaces everything under its prefix (default 'bull'), and
- * n8n's own pub/sub channels are 'n8n.*'. Every token is checked rather than
- * just the first key, because Bull drives most of its work through EVALSHA,
- * where the keys sit several arguments in.
- */
-/**
  * Redis commands that are connection plumbing, not the agent's work.
  *
  * ioredis issues HELLO / CLIENT SETNAME / CLIENT SETINFO / INFO on every
@@ -1117,18 +1031,6 @@ export function isRedisHousekeepingCommand(operation: string): boolean {
     default:
       return false;
   }
-}
-
-export function isN8nInternalRedisCommand(statement: string): boolean {
-  const prefix = (_env.QUEUE_BULL_PREFIX || 'bull').toLowerCase();
-  return statement
-    .toLowerCase()
-    .split(/\s+/)
-    .some((token) => (
-      token.startsWith(`${prefix}:`) ||
-      token.startsWith('n8n.') ||
-      token.startsWith('n8n:')
-    ));
 }
 
 function patchRedis(): boolean {
@@ -1186,8 +1088,8 @@ function patchIoRedisExports(redisCtor: { prototype?: Record<string, unknown> })
 /**
  * Trace connection attempts for a redis client or prototype.
  *
- * Uses the same queue-connection guard as the command patch, so n8n's own Bull
- * and pub/sub clients are not reported as the agent's work.
+ * Failed attempts are reported as a span pair; a successful connect carries no
+ * information the subsequent commands do not already have.
  */
 function patchRedisConnect(target: Record<string, unknown>): void {
   patchConnectMethod(
@@ -1198,7 +1100,6 @@ function patchRedisConnect(target: Record<string, unknown>): void {
       const c = redisConnectionInfo(self);
       return { host: c.host, port: c.port, dbName: c.db };
     },
-    (conn) => isN8nQueueRedisConnection(conn.host, conn.port),
   );
 }
 
@@ -1214,14 +1115,9 @@ function traceRedisCommand(
   statement: string,
   invoke: () => unknown,
 ): unknown {
-  // n8n's own queue traffic is not the agent's work — see
-  // isN8nQueueRedisConnection / isN8nInternalRedisCommand.
   const conn = redisConnectionInfo(self);
-  if (
-    isRedisHousekeepingCommand(operation) ||
-    isN8nQueueRedisConnection(conn.host, conn.port) ||
-    isN8nInternalRedisCommand(statement)
-  ) {
+  // A driver's own handshake is not the agent's work.
+  if (isRedisHousekeepingCommand(operation)) {
     return invoke();
   }
 

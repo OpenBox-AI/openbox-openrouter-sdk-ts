@@ -1,9 +1,8 @@
 /**
- * Verdict enforcement — TypeScript port of openbox_langgraph/verdict_handler.py.
+ * Verdict enforcement: maps a governance arm to the error it raises.
  *
- * enforce_verdict() maps governance verdict arms to exceptions. The Python SDK
- * also has GovernanceBlockedError for OTel hook-level blocks; we include it
- * here for structural completeness even though n8n skips the OTel layer.
+ * `enforceVerdict()` maps a governance arm to the error it raises.
+ * `GovernanceBlockedError` additionally covers hook-level (span) blocks.
  */
 
 import { GovernancePatch, GovernanceVerdictResponse, VerdictArm } from './types';

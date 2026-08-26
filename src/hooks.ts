@@ -1,6 +1,5 @@
 /**
- * Hook helper functions — port of the n8n node's `shared/langchain/hooks.ts`
- * (itself a port of middleware_hooks.py).
+ * Hook helper functions — event construction, evaluation and closure.
  *
  * _base_event_fields, _evaluate, _extract_last_user_message,
  * _extract_prompt_from_messages, _apply_pii_redaction,
@@ -160,9 +159,9 @@ export function extractGovernanceBlocked(err: unknown): GovernanceBlockedError |
 // ── message role / shape helpers ──────────────────────────────────────────────
 
 /**
- * Resolve a message's role. Tries a real LangChain message instance's
+ * Resolve a message's role. Tries a real chat message instance's
  * `.getType()` method first (HumanMessage/AIMessage/ToolMessage etc. — the
- * shape produced by model.invoke()/ToolMessage construction in the n8n node),
+ * shape produced by model.invoke()/ToolMessage construction),
  * then falls back to a plain `.type`/`.role` property for tuple/dict messages.
  */
 function messageRole(msg: unknown): unknown {
@@ -206,7 +205,7 @@ export function hasHumanTurn(messages: unknown[]): boolean {
 
 /**
  * Find the last human/user message in an agent state messages array.
- * Handles both tuple format ['human', text] and LangChain message objects.
+ * Handles both tuple format ['human', text] and message objects.
  */
 export function extractLastUserMessage(messages: unknown[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -329,8 +328,8 @@ export function applyPiiRedaction(messages: unknown[], redactedInput: unknown): 
 // ── OpenAI-format serializers (for Layer 2 http_request spans) ───────────────
 
 /**
- * Convert one LangChain message (tuple or object) to an OpenAI-format message.
- * Mirrors what httpx body capture sees on the wire in the Python SDK.
+ * Convert one chat message (tuple or object) to an OpenAI-format message.
+ * This is the shape that reaches the provider on the wire.
  */
 function lcMsgToOpenAi(msg: unknown): Record<string, unknown> | null {
   if (Array.isArray(msg) && msg.length === 2) {
@@ -355,7 +354,7 @@ function lcMsgToOpenAi(msg: unknown): Record<string, unknown> | null {
   return null;
 }
 
-/** Serialize the LangChain messages array to an OpenAI Chat Completion request body. */
+/** Serialize the chat messages array to an OpenAI Chat Completion request body. */
 export function serializeMessagesToOpenAiBody(messages: unknown[], model?: string): string {
   const oaiMessages = messages
     .map(lcMsgToOpenAi)
@@ -367,7 +366,7 @@ export function serializeMessagesToOpenAiBody(messages: unknown[], model?: strin
   }
 }
 
-/** Serialize a LangChain AIMessage to an OpenAI Chat Completion response body. */
+/** Serialize a provider AIMessage to an OpenAI Chat Completion response body. */
 export function serializeResponseToOpenAiBody(response: unknown): string {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ai: any = (response as any)?.message ?? response;
@@ -420,7 +419,7 @@ function asFiniteNumber(value: unknown): number | null {
 }
 
 /**
- * Extract token counts, model name, and completion text from a LangChain
+ * Extract token counts, model name, and completion text from a provider
  * AIMessage. Mirrors _extract_response_metadata in middleware_hooks.py.
  * Missing values are explicit `null` (present key) rather than an absent
  * key, so the field always survives serialization.
@@ -428,8 +427,8 @@ function asFiniteNumber(value: unknown): number | null {
 export function extractResponseMetadata(response: unknown): ResponseMetadata {
   // OpenRouter's PostModelCall payload arrives in camelCase
   // ({model, usage: {inputTokens, outputTokens, totalTokens}}) rather than the
-  // LangChain AIMessage shape. Detect it first — it is the shape this SDK
-  // actually sees at runtime; the LangChain branch below is kept so the two
+  // provider AIMessage shape. Detect it first — it is the shape this SDK
+  // actually sees at runtime; the alternate branch below is kept so the two
   // ports stay diffable and so a caller passing a raw provider message still
   // gets sensible values.
   const orMeta = extractOpenRouterMetadata(response);
@@ -481,7 +480,7 @@ export function extractResponseMetadata(response: unknown): ResponseMetadata {
 /**
  * Recognize the OpenRouter Agent SDK's `PostModelCall` payload (and the
  * `ModelResult`-shaped objects carrying the same `usage` record). Returns null
- * for anything that is not clearly one of those, so the LangChain-shaped path
+ * for anything that is not clearly one of those, so the object-shaped path
  * stays the fallback rather than being shadowed by a partial match.
  */
 function extractOpenRouterMetadata(response: unknown): ResponseMetadata | null {

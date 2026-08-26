@@ -1,8 +1,6 @@
 /**
- * Structured error normalization — TypeScript port of openbox-langchain-sdk-ts's
- * error-info.ts. This is the single seam every thrown value passes through before
- * landing in a governance event's `error` field. Core rejects a bare string there
- * with 400, so nothing on the wire may carry a top-level string error.
+ * Structured error normalization: Core rejects a bare string in an event's
+ * `error` field, so every error is coerced into `{type, message, stack_trace}`.
  */
 
 import { ErrorInfo } from './types';
