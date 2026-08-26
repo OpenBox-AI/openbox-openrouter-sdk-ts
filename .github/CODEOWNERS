@@ -1,0 +1,13 @@
+# Default owner
+* @datle-krnl
+
+# Governance and release controls
+/.github/workflows/ @datle-krnl
+/.github/CODEOWNERS @datle-krnl
+/.gitleaks.toml @datle-krnl
+/CODE_OF_CONDUCT.md @datle-krnl
+/SECURITY.md @datle-krnl
+/LICENSE @datle-krnl
+/package.json @datle-krnl
+/package-lock.json @datle-krnl
+/sonar-project.properties @datle-krnl

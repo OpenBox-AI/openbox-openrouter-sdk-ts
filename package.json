@@ -14,7 +14,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "vitest run --coverage",
+    "ci:check": "npm run lint && npm run typecheck && npm run test && npm run build",
+    "pack:check": "npm pack --dry-run",
     "prepack": "npm run build"
   },
   "peerDependencies": {
@@ -26,9 +30,15 @@
     }
   },
   "devDependencies": {
+    "@eslint/js": "^9.15.0",
     "@openrouter/agent": "^0.11.0",
     "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "eslint": "^9.15.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.0",
     "typescript": "^5.6.0",
+    "typescript-eslint": "^8.15.0",
     "vitest": "^2.1.0"
   },
   "engines": {
