@@ -206,6 +206,15 @@ class RunState {
    * refusal rather than as silence.
    */
   blockedError: Error | null = null;
+  /**
+   * The finalization started for a refusal, so `close()` can wait for it.
+   *
+   * It is started without being awaited — the caller's error must not queue
+   * behind bookkeeping — which means the process can otherwise exit before the
+   * session is closed. Measured: exit 2 with the right reason printed, and the
+   * session still `pending`.
+   */
+  pendingFinalize: Promise<void> | null = null;
   private blockedWaiters: Array<(err: Error) => void> = [];
 
   /** Record a refusal and wake anything waiting on one. */
@@ -828,7 +837,21 @@ export function createOpenBoxGovernance(
         // A span-level refusal of THIS call must reach the caller. The refusal
         // rejects the patched fetch and the engine swallows that rejection, so
         // without this signal the run stops with no answer and no error.
-        onBlocked: (err) => run.noteBlocked(err),
+        onBlocked: (err) => {
+          run.noteBlocked(err);
+          // Close the run as failed, carrying the reason — nothing else will:
+          // the engine emits no SessionEnd for a call it never completed, so
+          // the session would sit at `pending` with no record of why it
+          // stopped.
+          //
+          // Deliberately NOT awaited, and deliberately not routed through
+          // `maybeFinalize`. Making the caller's error wait on finalization is
+          // what broke this the first time: the refusal reached the consumption
+          // handler, `release()` then called finalizeRun, that never settled,
+          // and the rethrow never happened — the same silent exit, one layer
+          // further in. The caller learns first; the bookkeeping follows.
+          run.pendingFinalize = finalizeRun(run, err).catch(() => undefined);
+        },
       },
     );
 
@@ -851,7 +874,15 @@ export function createOpenBoxGovernance(
     // Awaited BEFORE unregisterActivity, which drops whatever is left over.
     // This is a wait, not a read: the span carrying the text completes just
     // after `PostModelCall` fires (see `awaitAssistantText`).
-    const assistantText = await awaitAssistantText(activityId);
+    //
+    // Skipped for a refused call, which has no answer to wait for. The wait is
+    // capped at 2s on an UNREF'd timer, so a process with nothing else pending
+    // exits before it fires — and this close never reached its `WorkflowFailed`.
+    // Measured: exit 2 with the right reason printed and the session still
+    // `pending`, because the record was still queued behind a wait for text
+    // that was never coming.
+    const assistantText =
+      run.blockedError != null ? null : await awaitAssistantText(activityId);
     if (assistantText != null) recordTranscript(run, 'assistant', assistantText);
 
     // Which provider actually served this call. Started here — while the
@@ -945,8 +976,11 @@ export function createOpenBoxGovernance(
   async function finalizeRun(run: RunState, failedWith?: unknown): Promise<void> {
     if (run.closed) return;
     run.closed = true;
-    // A halted run is a failed run, whichever path got here first.
-    failedWith = failedWith ?? run.haltError ?? undefined;
+    // A halted run is a failed run, whichever path got here first — and so is
+    // a refused one. Core marks a session halted itself on a halt verdict, but
+    // nothing marks it on a block, so without this the run that was refused
+    // sits at `pending` forever and the record never says why it stopped.
+    failedWith = failedWith ?? run.haltError ?? run.blockedError ?? undefined;
     // The abort id is never registered, so nothing else would clean it up.
     if (run.abortActivityId != null) {
       clearActivityAbort(run.abortActivityId);
@@ -1430,21 +1464,27 @@ export function createOpenBoxGovernance(
       // while it is set: it exists precisely so the engine's next request
       // lands in a scope that refuses it.
       const scope = () => run.abortActivityId ?? run.llmActivityId ?? undefined;
-      const result = await runScope.run(run, async () =>
-        runWithActivityResolver(scope, async () =>
-          fn(
-            client,
-            { ...routedRequest, input: governedInput, hooks } as unknown as TRequest,
-            callOptions,
+      // Raced against a refusal, because the engine call itself may never
+      // settle. A span-level block rejects the patched fetch and the engine
+      // swallows that rejection — measured: `fn` pending forever, the process
+      // exiting 0 with no answer, no error, and the session left `pending`.
+      // Whether the engine propagates the rejection depends on where in its
+      // pipeline the call was refused, so it cannot be relied on either way.
+      // The consumption path is raced too, for a refusal that lands later.
+      const result = await Promise.race([
+        runScope.run(run, async () =>
+          runWithActivityResolver(scope, async () =>
+            fn(
+              client,
+              { ...routedRequest, input: governedInput, hooks } as unknown as TRequest,
+              callOptions,
+            ),
           ),
         ),
-      );
-      // A refusal raised while the engine was mid-call must win over waiting
-      // for it. The engine swallows the rejected fetch, so the promise the
-      // caller awaits would otherwise never settle: measured as a blocked call
-      // exiting 0 with no answer and no error. Checked here for a refusal that
-      // already landed, and raced below for one that lands during consumption.
-      if (run.blockedError != null) throw run.blockedError;
+        run.blockedSignal().then((err): never => {
+          throw err;
+        }),
+      ]);
       return scopeResultConsumption(result, scope, runScope, run, {
         begin: () => {
           run.consumptionsInFlight++;
@@ -1484,8 +1524,15 @@ export function createOpenBoxGovernance(
 
   async function close(): Promise<void> {
     // Backstop for a run that was never consumed (so no SessionEnd ever fired)
-    // or was abandoned mid-read. A run that already finalized is skipped.
+    // or was abandoned mid-read. A run that already finalized is skipped —
+    // except a refused one, whose finalization was started but not awaited so
+    // the refusal could reach the caller first. Skipping it there is what left
+    // the session `pending` while the terminal printed the right reason.
     for (const run of openRuns) {
+      if (run.pendingFinalize != null) {
+        await run.pendingFinalize;
+        continue;
+      }
       if (run.closed) continue;
       await finalizeRun(run, new Error('Governance closed before the run finished'));
     }
