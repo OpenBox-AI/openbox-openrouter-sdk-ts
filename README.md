@@ -256,6 +256,14 @@ statement backed by a signature.
 record, so `provider.only: ["anthropic"]` versus what actually served the call
 is a comparison anyone can make — `openbox.routing.honored` is the answer.
 
+The same record settles a second question: *did I get the model I paid for?*
+The model the provider actually ran is compared to the model the request asked
+for → `openbox.model.honored`. A model the caller declared in their own
+`models` fallback chain counts as honored — they listed it — and
+`openrouter/auto` is reported as unchecked rather than as a pass, because
+choosing the model is the promise there. Unlike the provider check, nearly
+every request names a model, so this one speaks for almost all of the traffic.
+
 The span is also what the dashboard's routing-integrity panel reads. It is the
 only channel this record has: `routingSummaries()` returns the same figures
 in-process, and the summary sent on `WorkflowCompleted.extra` never reaches
@@ -273,6 +281,7 @@ What lands on each model call:
 | `gen_ai.upstream.is_byok` | whether your key was used |
 | `gen_ai.routing.providers_tried` · `…fallback_attempts` | the failover trail |
 | `openbox.routing.requested_only` · `…honored` | what was asked for, and whether it held |
+| `gen_ai.response.model` · `openbox.model.requested` · `openbox.model.honored` | the model that ran, the model asked for, and whether they match |
 | `gen_ai.generation.id` | OpenRouter's receipt number, so any claim can be re-checked at source |
 
 ### Timing, and what it costs you

@@ -56,6 +56,36 @@ on `captureRequestObjectBody`, which the honored comparison needs — it reads
 `provider.only` off the outbound request body, and the OpenRouter client passes a
 `Request` whose body is otherwise not captured.
 
+## Model substitution showcase
+
+```bash
+npm run demo:model
+```
+
+Three real runs answering the other question the same record settles — *did I
+get the model I paid for?*
+
+- a plain request, where the model named is the model that runs;
+- a declared fallback chain: asks for `anthropic/claude-3.5-haiku` but permits
+  only the OpenAI provider, so `openai/gpt-4o-mini` answers. Requested and
+  served differ and it is still honored — the caller listed that model
+  themselves;
+- `openrouter/auto`, where choosing the model *is* the promise, so the call is
+  reported as **unchecked** rather than as a pass. (Observed: an `auto` request
+  came back as `openai/gpt-5.6-luna-20260709`, a model the caller never named.)
+
+Any single run can do the same:
+
+```bash
+OPENROUTER_MODEL=anthropic/claude-3.5-haiku \
+OPENROUTER_MODELS=anthropic/claude-3.5-haiku,openai/gpt-4o-mini \
+OPENROUTER_PROVIDER_ONLY=openai npm run agent
+```
+
+A model *outside* both `model` and `OPENROUTER_MODELS` answering is a
+substitution, and is reported as one. OpenRouter does not do that, which is why
+the demo cannot produce one — the check finding nothing is the result.
+
 ## What it does
 
 Three tools, chosen to exercise different governance paths:

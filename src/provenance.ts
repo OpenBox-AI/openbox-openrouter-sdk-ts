@@ -69,6 +69,14 @@ export interface RoutingProvenance {
    * nothing is honoured or broken.
    */
   honored: boolean | null;
+  /** The model the caller asked for, when the request named one. */
+  requestedModel: string | null;
+  /**
+   * Whether the model that ran is the model that was asked for.
+   * `null` when the request named no model, or named `openrouter/auto` —
+   * picking the model IS the promise there, so nothing was substituted.
+   */
+  modelHonored: boolean | null;
 }
 
 /** The routing constraints carried on the request itself. */
@@ -150,6 +158,73 @@ export function isRoutingHonored(
   return requested.only.some((allowed) => sameProvider(allowed, provider));
 }
 
+/**
+ * Read the model the caller asked for, off a request body.
+ *
+ * Kept separate from `RequestedRouting` on purpose: that type is also the
+ * shape a policy injects back INTO a request (`applyRoutingToRequest`), and a
+ * governance layer that can silently rewrite which model runs is a different,
+ * much larger claim than one that checks it. This is read-only evidence.
+ */
+export function extractRequestedModel(requestBody: string | null): string | null {
+  if (requestBody == null) return null;
+  try {
+    return readRequestedModel(JSON.parse(requestBody));
+  } catch {
+    return null;
+  }
+}
+
+/** Read the requested model straight off the request OBJECT. */
+export function readRequestedModel(request: unknown): string | null {
+  if (request == null || typeof request !== 'object') return null;
+  return asString((request as Record<string, unknown>).model);
+}
+
+/**
+ * Compare two OpenRouter model ids.
+ *
+ * Variant suffixes (`:floor`, `:nitro`, `:online`) select how a model is
+ * routed, not which model runs, and OpenRouter reports the base id back — so
+ * `openai/gpt-4o-mini:floor` served as `openai/gpt-4o-mini` is not a
+ * substitution. Everything else is compared literally: `gpt-4o-mini` and
+ * `gpt-4o` are different products at different prices, and a comparison
+ * generous enough to call them equal would defeat the check.
+ */
+function sameModel(a: string, b: string): boolean {
+  const base = (id: string) => id.trim().toLowerCase().split(':')[0];
+  return base(a) === base(b);
+}
+
+/** `openrouter/auto` and friends delegate the choice — nothing is promised. */
+function isAutoRouted(model: string): boolean {
+  return model.trim().toLowerCase().endsWith('/auto');
+}
+
+/**
+ * Did the model that ran match the model that was asked for?
+ *
+ * "Did I get the model I paid for?" is the router fear this answers. The
+ * response body carries the model as the provider ran it, but nobody compares
+ * it to the request — and under a `models` fallback chain, or a provider that
+ * quietly serves a quantized or older build, the two can differ while the call
+ * looks entirely successful.
+ *
+ * A model named in the caller's own `models` fallback chain counts as honored:
+ * they asked for it as an acceptable alternative. Anything else does not.
+ */
+export function isModelHonored(
+  served: string | null,
+  requested: string | null,
+  fallbacks?: string[] | null,
+): boolean | null {
+  if (requested == null || requested.trim() === '') return null;
+  if (isAutoRouted(requested)) return null;
+  if (served == null) return null;
+  if (sameModel(served, requested)) return true;
+  return (fallbacks ?? []).some((candidate) => sameModel(candidate, served));
+}
+
 function asNumber(value: unknown): number | null {
   const n = typeof value === 'string' ? Number(value) : value;
   return typeof n === 'number' && Number.isFinite(n) ? n : null;
@@ -164,6 +239,7 @@ export function normalizeGenerationRecord(
   generationId: string,
   raw: unknown,
   requested: RequestedRouting | null,
+  requestedModel: string | null = null,
 ): RoutingProvenance {
   const root = (raw != null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   // The endpoint wraps the record in `data`.
@@ -186,10 +262,11 @@ export function normalizeGenerationRecord(
   }
 
   const provider = asString(record.provider_name);
+  const model = asString(record.model);
   return {
     generationId,
     provider,
-    model: asString(record.model),
+    model,
     dataRegion: asString(record.data_region),
     totalCost: asNumber(record.total_cost),
     upstreamCost: asNumber(record.upstream_inference_cost),
@@ -201,6 +278,8 @@ export function normalizeGenerationRecord(
     attempts,
     requested,
     honored: isRoutingHonored(provider, requested),
+    requestedModel,
+    modelHonored: isModelHonored(model, requestedModel, requested?.models),
   };
 }
 
@@ -225,6 +304,7 @@ export async function fetchGenerationRecord(
   generationId: string,
   requested: RequestedRouting | null,
   opts: FetchProvenanceOptions,
+  requestedModel: string | null = null,
 ): Promise<RoutingProvenance | null> {
   const base = (opts.baseUrl ?? 'https://openrouter.ai').replace(/\/$/, '');
   const url = `${base}${GENERATION_PATH}?id=${encodeURIComponent(generationId)}`;
@@ -261,7 +341,7 @@ export async function fetchGenerationRecord(
       if (response.status === 404) continue; // not written yet — try once more
       if (!response.ok) return null;
       const body = (await response.json()) as unknown;
-      return normalizeGenerationRecord(generationId, body, requested);
+      return normalizeGenerationRecord(generationId, body, requested, requestedModel);
     } catch {
       continue; // transient — the loop's backoff is the retry
     } finally {
@@ -308,5 +388,7 @@ export function provenanceAttributes(p: RoutingProvenance): Record<string, unkno
     attrs['openbox.routing.allow_fallbacks'] = p.requested.allowFallbacks;
   }
   if (p.honored != null) attrs['openbox.routing.honored'] = p.honored;
+  put('openbox.model.requested', p.requestedModel);
+  if (p.modelHonored != null) attrs['openbox.model.honored'] = p.modelHonored;
   return attrs;
 }

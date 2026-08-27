@@ -825,7 +825,7 @@ export function createOpenBoxGovernance(
     // awaited: OpenRouter writes the generation record a moment after the
     // response, and no turn should wait on evidence nobody is blocked on. The
     // run drains it before closing (see finalizeRun).
-    beginRoutingAttestation(activityId, run.declaredRouting);
+    beginRoutingAttestation(activityId, run.declaredRouting, run.model);
 
     await unregisterActivity(activityId);
 
@@ -1513,6 +1513,19 @@ function routingSummary(records: RoutingProvenance[]): Record<string, unknown> |
     ...new Set(records.flatMap((r) => r.requested?.only ?? [])),
   ];
   const fallbacks = records.reduce((n, r) => n + r.attempts.length, 0);
+  // "Did I get the model I paid for?" — the models actually run, and whether
+  // every checkable call ran the one it asked for.
+  const modelsServed = [
+    ...new Set(records.map((r) => r.model).filter((m): m is string => m != null)),
+  ];
+  const modelChecked = records.filter((r) => r.modelHonored != null);
+  const substituted = [
+    ...new Set(
+      modelChecked
+        .filter((r) => r.modelHonored === false)
+        .map((r) => `${r.requestedModel} → ${r.model}`),
+    ),
+  ];
 
   return {
     model_calls: records.length,
@@ -1522,6 +1535,11 @@ function routingSummary(records: RoutingProvenance[]): Record<string, unknown> |
     ...(requested.length > 0 ? { routing_requested_only: requested } : {}),
     ...(checked.length > 0 ? { routing_honored: checked.every((r) => r.honored === true) } : {}),
     ...(fallbacks > 0 ? { fallback_attempts: fallbacks } : {}),
+    ...(modelsServed.length > 0 ? { models_served: modelsServed } : {}),
+    ...(modelChecked.length > 0
+      ? { model_honored: modelChecked.every((r) => r.modelHonored === true) }
+      : {}),
+    ...(substituted.length > 0 ? { model_substitutions: substituted } : {}),
     generation_ids: records.map((r) => r.generationId),
   };
 }
