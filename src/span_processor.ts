@@ -1418,13 +1418,17 @@ export function beginRoutingAttestation(
       status: { code: 'OK', description: null },
       events: [],
       hook_type: 'llm_provenance',
-      // Not a completion: this is the gateway's record OF a completion, read
-      // back after the fact. Core recomputes semantic types on ingest and
-      // classifies it the same way from `gen_ai.generation.id`, so this is the
-      // honest label rather than the operative one — but sending
-      // `llm_completion` made a policy about model calls match a record about
-      // one, which is a different claim.
-      semantic_type: 'llm_routing',
+      // Not a completion, and not the routing decision either: this is the
+      // gateway's record OF a completion, read back after the fact. Core
+      // recomputes semantic types on ingest and classifies it the same way
+      // from `gen_ai.generation.id`, so this is the honest label rather than
+      // the operative one.
+      //
+      // `llm_routing` belongs to the pre-flight decision — where a policy will
+      // permit this prompt to go — which is a governance act a rule can be
+      // written about. Naming both the same made the timeline read "routing"
+      // twice for opposite things.
+      semantic_type: 'llm_provenance',
       gen_ai_system: record.provider ?? 'openrouter',
       activity_id: activityId,
     };
