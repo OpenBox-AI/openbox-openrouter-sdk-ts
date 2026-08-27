@@ -196,6 +196,16 @@ class RunState {
   /** What it asked for before a policy redirected it, kept for the record. */
   routingRedirectedFrom: RequestedRouting | null = null;
   /**
+   * The refused attempt this call is a retry of.
+   *
+   * A routed call is a NEW activity — an activity Core recorded as blocked must
+   * not go on to execute — but it is the same model call, re-issued. Without
+   * saying so, the record reads as two unrelated calls, one of which has no
+   * receipt: five calls and four receipts for four prompts, with nothing
+   * explaining the difference.
+   */
+  retriedFrom: string | null = null;
+  /**
    * A refusal raised while the engine was mid-call, and the promise waiting on
    * it.
    *
@@ -678,6 +688,25 @@ export function createOpenBoxGovernance(
     const routingClaimSpan = mw._config.preflightRouting
       ? routingSpan(activityId, 'started', run.model, run.declaredRouting)
       : null;
+    // A retry names the attempt it replaces. Read together, the refused
+    // activity and this one are one model call: attempt 1 never sent, attempt 2
+    // served — which is why only one of them carries a receipt.
+    let retryMetadata: Record<string, unknown> | null = null;
+    if (run.retriedFrom != null) {
+      if (routingClaimSpan != null) {
+        const attrs = routingClaimSpan.attributes as Record<string, unknown>;
+        attrs['openbox.routing.attempt'] = attempt;
+        attrs['openbox.routing.retried_from'] = run.retriedFrom;
+      }
+      // Also on the event, because the claim span travels for evaluation and is
+      // not persisted — so without this the link exists only for the policy,
+      // and a reader still sees two unrelated calls, one without a receipt.
+      retryMetadata = {
+        routing_attempt: attempt,
+        retried_from_activity_id: run.retriedFrom,
+      };
+      run.retriedFrom = null;
+    }
     // A refused call must close on the same claim it was refused on, or its
     // completion is evaluated against nothing and the record reads BLOCK …
     // ALLOW for one activity in which nothing changed.
@@ -703,6 +732,7 @@ export function createOpenBoxGovernance(
         // actually happened. On a redirect the SDK re-opens the call under the
         // corrected routing and this span restates it (see `resolveRouting`).
         ...(routingClaimSpan != null ? { spans: [routingClaimSpan], span_count: 1 } : {}),
+        ...(retryMetadata != null ? { metadata: retryMetadata } : {}),
       }),
     );
 
@@ -780,6 +810,8 @@ export function createOpenBoxGovernance(
         ).catch(() => undefined);
       }
       run.llmActivityId = null;
+      // The next attempt states what it is a retry of, so the pair reconciles.
+      run.retriedFrom = activityId;
 
       // Where it may go instead, as its own step.
       await routeModelCall(
