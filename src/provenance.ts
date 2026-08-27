@@ -33,11 +33,24 @@
 
 const GENERATION_PATH = '/api/v1/generation';
 
-/** One fallback attempt, as OpenRouter reports it. */
+/**
+ * One provider attempt, as OpenRouter reports it under `provider_responses`.
+ *
+ * "Attempt", not "failure": the array includes the provider that succeeded, so
+ * a failover happened only when there is more than one entry. Getting that
+ * backwards turns every call into a reported outage.
+ *
+ * `latencyMs` is per attempt, and it is the field that makes a reliability
+ * scorecard honest. Only the winning provider's latency was kept before, so a
+ * provider that timed out for eight seconds and then lost the call contributed
+ * nothing — its slowness was invisible and the surviving numbers flattered
+ * every provider in the chain.
+ */
 export interface ProviderAttempt {
   provider?: string;
   status?: number | string;
   error?: string;
+  latencyMs?: number;
 }
 
 /** The normalized provenance of a single model call. */
@@ -257,6 +270,7 @@ export function normalizeGenerationRecord(
         provider: asString(e.provider_name) ?? asString(e.provider) ?? undefined,
         status: (asNumber(e.status) ?? asString(e.status)) ?? undefined,
         error: asString(e.error) ?? undefined,
+        latencyMs: asNumber(e.latency) ?? undefined,
       });
     }
   }
@@ -381,6 +395,23 @@ export function provenanceAttributes(p: RoutingProvenance): Record<string, unkno
     attrs['gen_ai.routing.providers_tried'] = p.attempts
       .map((a) => a.provider)
       .filter((name): name is string => name != null);
+    // The full trail, one object per attempt, in the order OpenRouter reports
+    // it. `providers_tried` above drops an attempt with no provider name and so
+    // cannot be index-aligned with anything; this is the shape that can be
+    // aggregated — per provider, how often it was tried, how often it failed,
+    // and how slow it was when it did.
+    //
+    // Deliberately an array of objects rather than parallel arrays. Core stores
+    // attributes as `map[string]interface{}` marshalled to JSONB, so nesting
+    // survives untouched and one `jsonb_array_elements` reaches every field.
+    // Parallel arrays would need an index-zip in SQL and silently mis-pair the
+    // moment one array is shorter than another.
+    attrs['gen_ai.routing.attempts'] = p.attempts.map((a) => ({
+      provider: a.provider ?? null,
+      status: a.status ?? null,
+      latency_ms: a.latencyMs ?? null,
+      error: a.error ?? null,
+    }));
   }
   if (p.requested?.only != null) attrs['openbox.routing.requested_only'] = p.requested.only;
   if (p.requested?.order != null) attrs['openbox.routing.requested_order'] = p.requested.order;
