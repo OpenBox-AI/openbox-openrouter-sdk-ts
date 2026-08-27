@@ -1418,7 +1418,13 @@ export function beginRoutingAttestation(
       status: { code: 'OK', description: null },
       events: [],
       hook_type: 'llm_provenance',
-      semantic_type: 'llm_completion',
+      // Not a completion: this is the gateway's record OF a completion, read
+      // back after the fact. Core recomputes semantic types on ingest and
+      // classifies it the same way from `gen_ai.generation.id`, so this is the
+      // honest label rather than the operative one — but sending
+      // `llm_completion` made a policy about model calls match a record about
+      // one, which is a different claim.
+      semantic_type: 'llm_routing',
       gen_ai_system: record.provider ?? 'openrouter',
       activity_id: activityId,
     };
