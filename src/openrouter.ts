@@ -78,6 +78,7 @@ import {
   abortActivity,
   clearActivityAbort,
   registerActivity,
+  setActivityRouting,
   runInScopeSync,
   awaitAssistantText,
   beginRoutingAttestation,
@@ -194,6 +195,17 @@ class RunState {
   routingStartedAtMs = 0;
   /** What it asked for before a policy redirected it, kept for the record. */
   routingRedirectedFrom: RequestedRouting | null = null;
+  /**
+   * The reason of a block the routing step has already answered.
+   *
+   * A routing policy is stateless, so the same refusal arrives again on the
+   * retried call, on that call's own span, and on its completion hook. The
+   * request now complies with the directive, so re-enforcing it refuses a call
+   * that was routed exactly as the policy asked — and on the completion hook it
+   * throws after the answer already exists, which governs nothing and only
+   * fills the log with stack traces.
+   */
+  routingSupersededReason: string | null = null;
 
   /** Activity id of the currently-open llm_call, if any. */
   llmActivityId: string | null = null;
@@ -755,6 +767,9 @@ export function createOpenBoxGovernance(
 
     if (startResponse != null) {
       try {
+        if (routing === 'satisfied' && startResponse.reason != null) {
+          run.routingSupersededReason = startResponse.reason;
+        }
         const result = enforceVerdict(
           // A directive the request already complies with has nothing left to
           // enforce: the policy is restating a constraint that is in force.
@@ -776,6 +791,21 @@ export function createOpenBoxGovernance(
         throw err;
       }
     }
+
+    // What this request is constrained to, so a span-level block restating the
+    // same constraint is recognised as already met rather than refusing the
+    // call at the wire. A routing policy is stateless: it fires again on the
+    // call it just redirected, and again on the HTTP span inside it.
+    // The second argument matters: when the routing step has already answered
+    // this policy's block, the same block will arrive again on this call's own
+    // span, and core strips the directive from span verdicts by design. Passing
+    // the reason forward is what stops the routed call being refused at the
+    // wire.
+    setActivityRouting(
+      activityId,
+      run.declaredRouting,
+      run.routingSupersededReason ?? undefined,
+    );
 
     // Layer 2: register so the actual HTTPS call to OpenRouter is captured as
     // an http_request span under this activity (and can be aborted mid-flight
@@ -861,7 +891,20 @@ export function createOpenBoxGovernance(
 
     if (resp != null) {
       try {
-        const endResult = enforceVerdict(resp, 'llm_end');
+        // Same reasoning as the start hook, one step later: a block restating a
+        // refusal this request already satisfies has nothing left to refuse,
+        // and the call it would refuse has already returned. Throwing here only
+        // surfaced a GovernanceBlockedError stack out of the engine's
+        // PostModelCall hook on every turn.
+        const supersededEnd =
+          run.routingSupersededReason != null &&
+          resp.reason === run.routingSupersededReason;
+        const endResult = enforceVerdict(
+          supersededEnd
+            ? { ...resp, arm: 'allow', verdict: 'allow', action: 'allow' }
+            : resp,
+          'llm_end',
+        );
         if (endResult.requiresHitl) {
           await pollApprovalOrHalt(mw, run.turn, activityId, 'llm_call', endResult.approvalId);
         }

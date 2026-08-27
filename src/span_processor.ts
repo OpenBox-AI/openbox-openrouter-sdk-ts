@@ -19,6 +19,7 @@
 
 import { AsyncLocalStorage } from 'async_hooks';
 import { setTimeout as _st } from 'timers';
+import { isDirectiveSatisfied } from './preflight_routing';
 import {
   extractRequestedRouting,
   extractRequestedModel,
@@ -340,7 +341,10 @@ async function evaluateHookSpan(
     // Span is always sent to Core so it shows on the dashboard.
     // For already-approved activities, skip verdict enforcement — enforcing would
     // create spurious approval rows. The ToolStarted approval covers the full call.
-    if (!_approvedActivities.has(entry.ctx.activity_id)) {
+    if (
+      !_approvedActivities.has(entry.ctx.activity_id) &&
+      !isSupersededByRouting(entry, response)
+    ) {
       await enforceHookVerdict(entry, response, String(spanData.http_url ?? spanData.name ?? 'hook'));
     }
   } catch (err) {
@@ -1132,6 +1136,74 @@ const _assistantText = new Map<string, string>();
 const _llmSpanPending = new Set<string>();
 
 /**
+ * Per-activity routing state, so a span-level block that merely restates a
+ * refusal the request has already satisfied does not refuse the call at the
+ * wire.
+ *
+ * Why this is needed. A routing policy is stateless, so it fires three times
+ * for one prompt: on the activity that gets redirected, on the retried
+ * activity, and on the HTTP span inside the retried activity. The activity path
+ * already ignores a block whose directive the request now satisfies. The span
+ * path could not: **core strips the patch from hook verdicts by design**
+ * (`governance_workflow.go` — "Eligibility (non-hook event...)"), so a span
+ * verdict arrives as a bare `block` with a reason and no directive to compare.
+ * Measured before this existed: the routed call was refused at the wire, the
+ * engine swallowed the rejected fetch, and the run exited 0 with no answer, no
+ * error and the session left `pending`.
+ *
+ * So the SDK carries the adjudication forward itself: `supersededReason` is the
+ * reason of the block the routing step already answered.
+ *
+ * **The limitation, stated plainly.** With no directive on the span verdict,
+ * the reason string is the only thing distinguishing "the same refusal again"
+ * from "a different refusal". A block with any other reason — PII, a guardrail,
+ * a behaviour rule — is still enforced. A policy that reuses one reason string
+ * for a routing rule and an unrelated rule would have the unrelated one
+ * suppressed on the model call's own span. That is narrow, and the alternative
+ * is a feature that cannot let a single call through.
+ */
+interface ActivityRoutingState {
+  routing: RequestedRouting | null;
+  supersededReason?: string;
+}
+
+const _activityRouting = new Map<string, ActivityRoutingState>();
+
+/**
+ * Record what the request for this activity is constrained to, and — when the
+ * routing step has already answered a block — the reason it answered.
+ */
+export function setActivityRouting(
+  activityId: string,
+  routing: RequestedRouting | null,
+  supersededReason?: string,
+): void {
+  _activityRouting.set(activityId, { routing, ...(supersededReason ? { supersededReason } : {}) });
+}
+
+/** Is this span verdict the refusal the routing step has already satisfied? */
+function isSupersededByRouting(
+  entry: ActiveEntry,
+  response: GovernanceVerdictResponse | null,
+): boolean {
+  const state = _activityRouting.get(entry.ctx.activity_id);
+  if (state == null) return false;
+
+  // A directive on the verdict is the stronger signal: compare it properly.
+  if (isDirectiveSatisfied(response, state.routing)) return true;
+
+  if (state.supersededReason == null) return false;
+  const reason = response?.reason;
+  if (typeof reason !== 'string' || reason !== state.supersededReason) return false;
+
+  entry.logger.warn(
+    `span block restates a routing refusal already satisfied by this request ` +
+      `("${reason}") — not refusing the call again`,
+  );
+  return true;
+}
+
+/**
  * Routing provenance awaiting collection, keyed by activity.
  *
  * Set when a model call's completed span is built (that is where the
@@ -1662,6 +1734,7 @@ export function isActivityApproved(activityId: string): boolean {
  * 
  */
 export async function unregisterActivity(activityId: string): Promise<void> {
+  _activityRouting.delete(activityId);
   // Drain first: dropping the registration while completion spans are still in
   // flight makes evaluateActivitySpan discard them, so operations would show a
   // 'started' span and never a 'completed' one.
