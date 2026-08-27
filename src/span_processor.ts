@@ -19,6 +19,7 @@
 
 import { AsyncLocalStorage } from 'async_hooks';
 import { setTimeout as _st } from 'timers';
+import { routingConstraintAttributes } from './preflight_routing';
 import {
   extractRequestedRouting,
   extractRequestedModel,
@@ -332,6 +333,19 @@ async function evaluateHookSpan(
   // `stage` field. Relabelling the completed hook as 'ActivityCompleted' made
   // Core read it as a lifecycle completion instead, so durations were never
   // filled in and every span sat at "started" on the dashboard.
+  // The constraint this call is running under, on the span the policy is being
+  // asked about. Same keys as the pre-flight claim, so one guard covers both.
+  const inForce = _activityRouting.get(entry.ctx.activity_id);
+  if (inForce != null) {
+    const stamped = routingConstraintAttributes(inForce.model, inForce.routing);
+    if (Object.keys(stamped).length > 0) {
+      spanData.attributes = {
+        ...(spanData.attributes as Record<string, unknown> | undefined),
+        ...stamped,
+      };
+    }
+  }
+
   const payload: Record<string, unknown> = {
     ...entry.ctx,
     timestamp: rfc3339Now(),
@@ -1152,6 +1166,30 @@ const _assistantText = new Map<string, string>();
 const _llmSpanPending = new Set<string>();
 
 /**
+ * The routing constraint in force for an activity, and the model it names.
+ *
+ * Stamped onto every span sent under that activity so a policy can tell an
+ * already-routed call from an unrouted one. A routing policy is stateless: it
+ * is asked about the activity and again about the HTTP request inside it, and
+ * without these facts on the span there is no way to write a rule that permits
+ * the call the routing step just corrected — so the rule refuses its own
+ * correction and the run never completes.
+ */
+const _activityRouting = new Map<
+  string,
+  { routing: RequestedRouting | null; model: string | null }
+>();
+
+/** Record the constraint in force for an activity, for stamping onto its spans. */
+export function setActivityRouting(
+  activityId: string,
+  routing: RequestedRouting | null,
+  model: string | null,
+): void {
+  _activityRouting.set(activityId, { routing, model });
+}
+
+/**
  * Routing provenance awaiting collection, keyed by activity.
  *
  * Set when a model call's completed span is built (that is where the
@@ -1683,6 +1721,7 @@ export function isActivityApproved(activityId: string): boolean {
  * 
  */
 export async function unregisterActivity(activityId: string): Promise<void> {
+  _activityRouting.delete(activityId);
   // Drain first: dropping the registration while completion spans are still in
   // flight makes evaluateActivitySpan discard them, so operations would show a
   // 'started' span and never a 'completed' one.
