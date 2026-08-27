@@ -133,6 +133,8 @@ describe('createOpenBoxGovernance — event lifecycle', () => {
     expect(transport.eventTypes()).toEqual([
       'WorkflowStarted',
       'SignalReceived',
+      // No routing step in the ordinary path: routing is only reported as its
+      // own activity when a policy actually redirects the call.
       'LLMStarted',
       'LLMCompleted',
       'WorkflowCompleted',

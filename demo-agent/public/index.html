@@ -68,6 +68,15 @@
   }
   .verdict.block, .verdict.halt, .verdict.unreachable { color: var(--stop); }
   .verdict.require_approval { color: var(--warn); }
+  .dot.constrain { background: var(--warn); }
+  .verdict.constrain { color: var(--warn); }
+  .provenance {
+    margin-top: 12px; font-size: 12.5px; color: var(--muted);
+    border-left: 3px solid var(--line); padding-left: 11px; line-height: 1.7;
+  }
+  .provenance b { color: var(--ink); font-weight: 560; }
+  .provenance .honored { color: var(--accent); }
+  .provenance .dishonored { color: var(--stop); }
   .ms { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12.5px; }
   .detail {
     grid-column: 2 / -1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -75,6 +84,7 @@
     padding: 7px 9px; border-radius: 6px; margin-top: 5px;
     white-space: pre-wrap; word-break: break-word;
   }
+  .detail.resolution { color: var(--accent); background: transparent; padding: 2px 0; font-family: inherit; font-size: 13px; }
   .detail.reason { color: var(--stop); background: transparent; padding: 2px 0; font-family: inherit; font-size: 13px; }
   .answer { white-space: pre-wrap; }
   .answer:empty::after { content: "…"; color: var(--muted); }
@@ -143,6 +153,10 @@
     A policy on this agent decides them — attach one and a <code>refund_order</code> row turns
     <strong>BLOCK</strong> or <strong>HALT</strong>, or waits on <strong>REQUIRE_APPROVAL</strong> while a
     human decides. The tool body never runs unless the verdict allows it.
+    The <code>routing preflight</code> row is the same decision made one step earlier: it is evaluated
+    <em>before</em> the request leaves the process, so a <strong>CONSTRAIN</strong> there rewrites where
+    the prompt may go — and a refusal means it was never sent at all. The line at the end of a run is
+    OpenRouter's own record of where it actually went.
   </p>
 </main>
 
@@ -234,6 +248,7 @@ form.addEventListener('submit', async (e) => {
       return;
     }
     if (ev.type === 'activity') return activity(ev);
+    if (ev.type === 'provenance') return provenance(ev);
     if (ev.type === 'answer') { answer.textContent += ev.text; return; }
     if (ev.type === 'done') return finish(ev.sessionUrl);
     if (ev.type === 'error') {
@@ -245,6 +260,39 @@ form.addEventListener('submit', async (e) => {
       card.appendChild(box);
       finish(ev.sessionUrl);
     }
+  }
+
+  /**
+   * Where the prompt actually went, once OpenRouter's generation record lands.
+   *
+   * The other end of the routing row above: that one is what the policy allowed
+   * before the call, this is what happened. Both are sealed under the session's
+   * signed root, so putting them next to each other is the whole claim.
+   */
+  function provenance(ev) {
+    const line = document.createElement('div');
+    line.className = 'provenance';
+    const served = (ev.served || []).join(', ') || 'unknown';
+    const asked = (ev.requested || []).join(', ');
+    const bits = ['served by <b>' + served + '</b>'];
+    if ((ev.regions || []).length) bits.push('region ' + ev.regions.join(', '));
+    if (ev.cost != null) bits.push('$' + Number(ev.cost).toFixed(5));
+    if (asked) {
+      bits.push(
+        ev.honored === true
+          ? 'constraint <span class="honored">honored</span> (only ' + asked + ')'
+          : 'constraint <span class="dishonored">broken</span> (asked for ' + asked + ')',
+      );
+    } else {
+      bits.push('unconstrained — nothing was promised');
+    }
+    line.innerHTML = bits.join(' · ');
+    if ((ev.generationIds || []).length) {
+      const verify = document.createElement('div');
+      verify.textContent = 'verify at source: ' + ev.generationIds.join(', ');
+      line.appendChild(verify);
+    }
+    card.appendChild(line);
   }
 
   function activity(ev) {
@@ -265,9 +313,16 @@ form.addEventListener('submit', async (e) => {
 
     const dot = row.querySelector('.dot');
     const verdict = row.querySelector('.verdict');
-    dot.className = 'dot ' + ev.verdict;
-    verdict.className = 'verdict ' + ev.verdict;
-    verdict.textContent = ev.verdict === 'allow' ? 'allow' : ev.verdict.replace('_', ' ');
+    // A refusal is not undone by the completion that closes it. The closure
+    // event is bookkeeping — nothing evaluates it — so letting its `allow`
+    // overwrite the row would show a call that never ran as though it had.
+    const refusing = (v) => v === 'block' || v === 'halt' || v === 'unreachable';
+    if (!(refusing(row.dataset.verdict) && !refusing(ev.verdict))) {
+      row.dataset.verdict = ev.verdict;
+      dot.className = 'dot ' + ev.verdict;
+      verdict.className = 'verdict ' + ev.verdict;
+      verdict.textContent = ev.verdict === 'allow' ? 'allow' : ev.verdict.replace('_', ' ');
+    }
     if (ev.durationMs != null && ev.stage === 'completed') {
       row.querySelector('.ms').textContent = (ev.durationMs / 1000).toFixed(1) + 's';
     }
@@ -278,10 +333,35 @@ form.addEventListener('submit', async (e) => {
       d.textContent = ev.reason;
       row.appendChild(d);
     }
+    // A routing row says two things, one per half: what the request asked for
+    // when it started, and where it actually went when it completed. Keeping
+    // both is the point — either alone is half a sentence.
+    // `resolution` arrives on its own, from the record span the SDK writes
+    // inside the call — it is where the call was actually routed.
+    if (ev.resolution && !row.querySelector('.detail.resolution')) {
+      const d = document.createElement('div');
+      d.className = 'detail resolution';
+      d.textContent = ev.resolution;
+      row.appendChild(d);
+    }
+    const detailClass = ev.stage === 'completed' ? 'resolution' : 'declared';
+    if (ev.detail && !row.querySelector('.detail.' + detailClass)) {
+      const d = document.createElement('div');
+      d.className = 'detail ' + detailClass;
+      d.textContent = ev.detail;
+      row.appendChild(d);
+    }
     if (ev.patch && !row.querySelector('.detail.patch')) {
       const d = document.createElement('div');
       d.className = 'detail patch';
-      d.textContent = 'policy suggests retrying with: ' + JSON.stringify(ev.patch.new_input);
+      // Two kinds of directive: a suggested retry for a blocked tool, which the
+      // model acts on, and a routing constraint, which the SDK applies to the
+      // request itself before it goes out.
+      const routing =
+        ev.patch.routing ?? ev.patch.provider ?? (ev.patch.new_input || {}).provider;
+      d.textContent = routing
+        ? 'policy narrowed routing to: ' + JSON.stringify(routing)
+        : 'policy suggests retrying with: ' + JSON.stringify(ev.patch.new_input);
       row.appendChild(d);
     }
     // A held activity is the one place the page can act: the SDK is polling

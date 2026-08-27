@@ -151,8 +151,8 @@ it attached, and a deep link into the session in the OpenBox dashboard.
 
 ### Scenarios
 
-Four buttons put the agent's policy into a known state before the run, so the
-same prompt can be run four ways and the difference is the verdict:
+Six buttons put the agent's policy into a known state before the run, so the
+same prompt can be run six ways and the difference is the verdict:
 
 | Scenario | Policy | What you should see |
 |---|---|---|
@@ -160,6 +160,14 @@ same prompt can be run four ways and the difference is the verdict:
 | **Blocked** | refunds over £5 refused, capped amount suggested | `refund_order` is refused; the model retries with £5 and that retry is evaluated fresh and allowed |
 | **Halted** | refunds stop the session | the tool never runs, no further model call goes out, the run ends with `GovernanceHaltError` |
 | **Needs approval** | a refund waits for a human | the row holds on `REQUIRE APPROVAL` with **Approve** / **Deny** — approve and the tool runs, deny and the run ends with the reviewer's reason |
+| **Routing narrowed** | prompts may only go to openai; the request names no allowlist | the first `llm_call` is **refused as routed** at both ends and runs nothing — no spans at all. Then an `llm_routing` step, green, carrying *routing to openai (openai/gpt-4o-mini)* started and completed. Then the corrected `llm_call`, green, with the request under it and a *served by OpenAI* span recording who actually took it. Every later call stays green, and the provenance line at the end shows openai served it, honored |
+| **Routing refused** | the same policy, against a request asking for azure | the two allowlists have nothing in common, so there is nowhere to route it: the `llm_call` is refused, no routing rows are recorded, and the run ends with `GovernanceBlockedError`. No prompt is sent, and there is no provenance line because there was no call |
+
+The last two keep every verdict true to what happened: the refused attempt is
+refused at both ends and executes nothing, the routing that fixed it is its own
+step, and the call that runs is a clean allow. The line at the end of a run is
+OpenRouter's own record of where the prompt actually went — the same comparison,
+from the other end.
 
 Switching a scenario rewrites the rego module OPA is watching and toggles the
 policy row Core looks up. That needs the local fixture:

@@ -21,8 +21,8 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { setTimeout as _st } from 'timers';
 import {
   extractRequestedRouting,
-  fetchGenerationRecord,
   provenanceAttributes,
+  fetchGenerationRecord,
   type RequestedRouting,
   type RoutingProvenance,
 } from './provenance';
@@ -372,7 +372,7 @@ function isDuplicateSpan(activityId: string, spanData: Record<string, unknown>):
       ? [spanData.http_method, spanData.http_url, spanData.http_status_code ?? '']
       : hookType === 'db_query'
         ? [spanData.db_system, spanData.db_statement, spanData.rowcount ?? '']
-        : hookType === 'llm_routing'
+        : hookType === 'llm_provenance'
           ? [(spanData.attributes as Record<string, unknown> | undefined)?.['gen_ai.generation.id']]
           : [spanData.file_path, spanData.file_operation];
   const key = [activityId, spanData.stage, hookType, ...identity].join('|');
@@ -1367,6 +1367,20 @@ export function beginRoutingAttestation(
       return null;
     }
 
+    // Emitted as a span, because that is the only channel that reaches Core.
+    //
+    // This was briefly removed on the grounds that a span should stand for
+    // something the run DID, and this record is an announcement about something
+    // that already happened. True as far as it goes — and it took routing
+    // provenance off the dashboard entirely. The summary that rides on
+    // `WorkflowCompleted.extra` never lands: Core's payload struct has no such
+    // field and drops it at unmarshal, exactly as it does `workflow_output`.
+    // Span attributes are also what Core hashes into the session's Merkle tree,
+    // so this is the only form in which the record is attested at all.
+    //
+    // If it should not appear as a row in the execution tree, that is a display
+    // decision for the dashboard: the data has to exist either way, and the
+    // routing-integrity panel reads it from here.
     const nowNs = Date.now() * 1_000_000;
     const spanData: Record<string, unknown> = {
       span_id: stableSpanId(`${activityId}|routing|${record.generationId}`),
@@ -1374,7 +1388,12 @@ export function beginRoutingAttestation(
         stableSpanId(`${activityId}|routing-trace|${record.generationId}`) +
         stableSpanId(`${activityId}|routing-trace2|${record.generationId}`),
       parent_span_id: null,
-      name: `routing ${record.provider ?? 'unknown'} ${record.model ?? ''}`.trim(),
+      // Says what it is: OpenRouter's record of who actually served the call.
+      // "routing …" read as though it were the routing decision, which happens
+      // before the call and is a different row.
+      name: `served by ${record.provider ?? 'an unreported provider'}${
+        record.model != null ? ` (${record.model})` : ''
+      }`,
       kind: 'CLIENT',
       stage: 'completed',
       start_time: nowNs,
@@ -1383,7 +1402,7 @@ export function beginRoutingAttestation(
       attributes: provenanceAttributes(record),
       status: { code: 'OK', description: null },
       events: [],
-      hook_type: 'llm_routing',
+      hook_type: 'llm_provenance',
       semantic_type: 'llm_completion',
       gen_ai_system: record.provider ?? 'openrouter',
       activity_id: activityId,

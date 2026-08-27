@@ -15,7 +15,13 @@
 import { writeFile } from 'node:fs/promises';
 import { Client as PgClient } from 'pg';
 
-export type ScenarioName = 'allow' | 'block' | 'halt' | 'approval';
+export type ScenarioName =
+  | 'allow'
+  | 'block'
+  | 'halt'
+  | 'approval'
+  | 'routing'
+  | 'routing-refuse';
 
 export interface Scenario {
   readonly name: ScenarioName;
@@ -30,6 +36,20 @@ export interface Scenario {
   readonly reason?: string;
   /** A remediation directive, for the arms that carry one. */
   readonly patch?: Record<string, unknown>;
+  /**
+   * A `provider` block the CALLER puts on the request — the agent's own stated
+   * routing constraint, as opposed to the policy's.
+   *
+   * This is the half that makes the routing step interesting: the same
+   * policy either narrows a request that declared nothing, or refuses one that
+   * declared a provider the policy forbids.
+   */
+  readonly provider?: Record<string, unknown>;
+  /**
+   * Gate the pre-flight routing span instead of the refund tool. The policy
+   * decides where the prompt may GO, before it goes anywhere.
+   */
+  readonly gate?: 'refund' | 'routing';
 }
 
 const REFUND_PROMPT = 'Order A-1003 arrived damaged. Check it and refund me in full.';
@@ -74,6 +94,31 @@ export const SCENARIOS: readonly Scenario[] = [
     prompt: REFUND_PROMPT,
     decision: 'REQUIRE_APPROVAL',
     reason: 'refunds require a reviewer',
+  },
+  {
+    name: 'routing',
+    label: 'Routing narrowed',
+    summary:
+      'Prompts may only be served by openai. The request itself declares no allowlist.',
+    expect:
+      'Before the first request goes out, the policy constrains it to provider.only=[openai] — and the provenance at the end shows openai served it, honored.',
+    prompt: REFUND_PROMPT,
+    decision: 'BLOCK',
+    reason: 'this agent may only send prompts to openai',
+    gate: 'routing',
+  },
+  {
+    name: 'routing-refuse',
+    label: 'Routing refused',
+    summary:
+      'The same policy — openai only — against a request that asks for azure.',
+    expect:
+      'The two allowlists have nothing in common, so the prompt is never sent: the run ends with GovernanceBlockedError before the first model call leaves the process.',
+    prompt: REFUND_PROMPT,
+    decision: 'BLOCK',
+    reason: 'this agent may only send prompts to openai',
+    gate: 'routing',
+    provider: { only: ['azure'] },
   },
 ];
 
@@ -125,6 +170,44 @@ refund_started if {
 }
 `;
   if (scenario.decision == null) return head;
+
+  // Routing to the model is its own governed activity, decided before the
+  // request is built — so this rule runs on the `llm_routing` step, not on the
+  // model call, and its verdict never lands on the `llm_call` row. The span it
+  // matches carries the same attribute vocabulary the post-hoc provenance
+  // record uses, so one rule can read both ends of the comparison.
+  //
+  // The directive rides on a BLOCK under `new_input`, because that is the only
+  // arm and key Core forwards a patch on — `CONSTRAIN`, `ALLOW` and `MONITOR`
+  // all arrive with the patch stripped (measured). The SDK reads it as "route it
+  // here instead", applies it, and the routing activity completes as redirected
+  // rather than refused. A block with no directive is a plain refusal.
+  //
+  // One rule, two outcomes, and which one you get depends on what the request
+  // declared. A request with no allowlist is narrowed to openai and proceeds; a
+  // request that asked for azure has nothing in common with the policy, so the
+  // SDK refuses the call and the prompt is never sent. The rule does NOT fire
+  // once the effective allowlist is already openai — which is what lets a
+  // narrowed run keep going for its later turns.
+  if (scenario.gate === 'routing') {
+    return `${head}
+routing := span if {
+	some span in input.spans
+	span.hook_type == "llm_routing_request"
+}
+
+declared := {lower(p) | some p in object.get(routing.attributes, "openbox.routing.requested_only", [])}
+
+result := {
+	"decision": "BLOCK",
+	"reason": ${JSON.stringify(scenario.reason ?? 'routing constrained by policy')},
+	"patch": {"new_input": {"provider": {"only": ["openai"], "allow_fallbacks": false}}},
+} if {
+	routing
+	declared != {"openai"}
+}
+`;
+  }
 
   // The block arm keys off the amount so the model's capped retry is allowed —
   // that is the whole point of a remediation directive.

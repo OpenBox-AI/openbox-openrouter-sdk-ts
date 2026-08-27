@@ -10,7 +10,8 @@ Governance and observability for the [OpenRouter Agent SDK](https://openrouter.a
 Wrap `callModel` and your tools, and every model call and tool execution is
 evaluated by policy before it runs, recorded with its inputs and outputs, and
 traced down to the HTTP and database calls made inside it. A policy can allow
-it, refuse it, stop the run, or hold it open until a human approves.
+it, refuse it, redirect where it goes, stop the run, or hold it open until a
+human approves.
 
 ```
 callModel ──▶ WorkflowStarted ──▶ llm_call ──▶ tool ──▶ llm_call ──▶ WorkflowCompleted
@@ -21,6 +22,13 @@ callModel ──▶ WorkflowStarted ──▶ llm_call ──▶ tool ──▶ 
 Governance is enforced where the decision still matters — before a tool runs,
 before the next model call goes out, and while a human decides — and everything
 the run does is recorded against the session it belongs to.
+
+That includes **where each prompt goes**. OpenRouter chooses a provider per
+request and the response does not say which one it was, so this SDK governs both
+ends of that: [where a call may be routed](#routing-to-the-model), decided before
+the request is built and enforceable by policy, and [who actually served
+it](#routing-provenance), read back from OpenRouter's own record and sealed under
+the session's signed root.
 
 ---
 
@@ -106,6 +114,12 @@ refund_order(A-1003, £12)  →  BLOCK   patch {"new_input": {"amount": 5, …}}
 refund_order(A-1003, £5)   →  ALLOW   tool executes
 ```
 
+**With one exception: routing.** A directive that names where a prompt may go is
+applied by the SDK itself, because it can only ever remove destinations — it
+cannot make a request do anything the caller did not ask for, only send it
+somewhere they already allowed. See [Routing to the
+model](#routing-to-the-model).
+
 Denial, expiry and client-side timeout of an approval all surface as
 `GovernanceHaltError`, so `require_approval` resolves into either allow or halt.
 
@@ -117,6 +131,7 @@ Denial, expiry and client-side timeout of an approval all surface as
 |---|---|---|
 | `beforeAgent` — WorkflowStarted + SignalReceived | awaited inside `callModel()`, before the request goes out | **yes** — block/halt aborts, `require_approval` polls, guardrails redact the prompt |
 | `wrapModelCall` — LLMStarted → model → LLMCompleted | LLMStarted pre-screen before each model call; LLMCompleted on `PostModelCall` | **partly** — see below |
+| `llm_routing` — where the call may go | a routing claim on each `llm_call`, decided before the request is built | **yes** — refuse the call, or redirect it and let the corrected one run |
 | `wrapToolCall` — ToolStarted → tool → ToolCompleted | `openbox.tools()` wraps each tool's `execute`/`run` | **yes** — including holding the call open across a human approval |
 | `afterAgent` — WorkflowCompleted | `SessionEnd` hook | n/a (observational by definition) |
 | HTTP / DB span capture | `span_processor.ts` + `node_instrumentation.ts` | **yes** — spans are evaluated mid-flight and can abort the call |
@@ -241,6 +256,13 @@ statement backed by a signature.
 record, so `provider.only: ["anthropic"]` versus what actually served the call
 is a comparison anyone can make — `openbox.routing.honored` is the answer.
 
+The span is also what the dashboard's routing-integrity panel reads. It is the
+only channel this record has: `routingSummaries()` returns the same figures
+in-process, and the summary sent on `WorkflowCompleted.extra` never reaches
+storage — Core's payload struct has no such field and drops it at unmarshal, the
+same way it drops `workflow_output`. So the span is not a display choice; remove
+it and routing provenance reaches Core nowhere.
+
 What lands on each model call:
 
 | Attribute | |
@@ -266,11 +288,156 @@ It needs an OpenRouter key (`openrouterApiKey`, or `OPENROUTER_API_KEY`) and is
 inert without one. Turn it off with `attestRouting: false` or
 `OPENBOX_ATTEST_ROUTING=false`.
 
-**One honest boundary:** because the record exists only after the call, this is
-evidence and session-level enforcement, not a pre-flight gate. A prompt already
-sent cannot be unsent. What a policy can do is refuse the *next* one and halt
-the session — which is exactly what you want when the router silently fails
-over to a provider your contract excludes.
+**The boundary this leaves:** the record exists only after the call, so on its
+own it is evidence and session-level enforcement. A prompt already sent cannot
+be unsent. Refusing the *next* one and halting the session is exactly what you
+want when the router silently fails over — but it is not a gate.
+
+## Routing to the model
+
+Where a call is going is stated on the call itself, as a span, before the request
+is built. A policy that refuses it is refusing **this model call as routed** —
+and a refusal means what it means everywhere else in this SDK: that activity does
+not run, at either end of it. When the policy also says where the prompt may go
+instead, routing happens as its own step and the corrected call follows:
+
+```
+llm_call     started    BLOCK   "not to that provider"   ← no spans: nothing ran
+llm_call     completed  BLOCK                             ← closed on the same verdict
+llm_routing  started    ALLOW
+  ├─ routing to openai (openai/gpt-4o-mini)  started
+  └─ routing to openai (openai/gpt-4o-mini)  completed
+llm_routing  completed  ALLOW
+llm_call     started    ALLOW
+  ├─ POST openrouter.ai/api/v1/responses  started
+  └─ POST openrouter.ai/api/v1/responses  completed  200
+llm_call     completed  ALLOW
+```
+
+Three properties this holds to:
+
+**A refused activity does not execute, and says so at both ends.** The refused
+attempt has no spans — no request was ever built under it — and its completion
+carries the same verdict as its start, along with why it was refused and what
+happened next: *blocked: this agent may only send prompts to openai — nothing
+was sent; routing to openai (openai/gpt-4o-mini) and retried*. A start that says BLOCK and a completion
+that says ALLOW would be a record contradicting itself: nothing about the call
+changed between the two, so nothing about the verdict should either. That is why
+a refusal closes on the same claim it was refused on, rather than on a fresh
+evaluation with nothing to object to.
+
+**Routing is its own step.** Deciding where a prompt may go is a different thing
+from calling the model, so it is a different activity, with the two halves of the
+routing under it. They name the destination — the provider the policy allows and
+the model it serves — because "routing" on a row beneath a model call tells a
+reader nothing they cannot already see.
+
+**The corrected call is a new call.** Evaluated fresh, allowed, and the only one
+that runs.
+
+The routing step appears **only when a policy actually redirects**. An ordinary
+call — no policy, or a policy that is satisfied — is one `llm_call`, one
+round-trip, nothing extra.
+
+The claim is written in the same attribute vocabulary the provenance record
+uses, so one rule reads both ends:
+
+| Attribute | |
+|---|---|
+| `openbox.routing.declared` | whether this call named an allowlist at all |
+| `openbox.routing.requested_only` · `…requested_order` · `…requested_models` | where it may go |
+| `openbox.routing.allow_fallbacks` | whether it fails closed |
+| `openbox.routing.redirected_from` · `…resolution` | on the record: what it asked for, and where it went |
+| `gen_ai.request.model` | the model asked for |
+
+```rego
+routing := span if {
+	some span in input.spans
+	span.hook_type == "llm_routing_request"
+}
+
+# "no prompt leaves this agent without an allowlist" — decidable, before it goes.
+result := {"decision": "BLOCK", "reason": "routing must be constrained"} if {
+	routing
+	routing.attributes["openbox.routing.declared"] == false
+}
+```
+
+Three things a policy can do here that provenance alone cannot:
+
+**Refuse before the prompt is sent.** The request was never built. Nothing left
+the process, and no routing rows are written, because nothing was routed
+anywhere.
+
+**Redirect it.** Attach the routing to use instead, and the corrected call goes
+there:
+
+```rego
+result := {
+	"decision": "BLOCK",
+	"reason": "this agent may only send prompts to openai",
+	"patch": {"new_input": {"provider": {"only": ["openai"], "allow_fallbacks": false}}},
+} if {
+	routing
+	{lower(p) | some p in object.get(routing.attributes, "openbox.routing.requested_only", [])} != {"openai"}
+}
+```
+
+Only ever **narrower**. `only` and `models` intersect with what the caller
+named, so a policy can never route a prompt somewhere the caller did not allow;
+`allow_fallbacks` is false if either side says so. This is the one directive the
+SDK applies on its own initiative, and that is why: it cannot make a request do
+anything the caller did not ask for, only send it to fewer places. (Contrast
+`patch.new_input` on a *tool*, which is offered to the model and never applied —
+see [Verdicts](#verdicts-what-each-one-actually-does).)
+
+**Fail closed on a contradiction.** If the policy allows only `openai` and the
+request named `azure` alone, nothing satisfies both. The call is refused rather
+than resolved in either party's favour.
+
+### Asked one way, recorded another
+
+The claim rides on the model call's own event, because that is what a policy is
+given: Core binds an event's spans into policy input. The record is written
+through the hook-span path, because that is what Core *persists* — spans on a
+lifecycle event reach the policy but are never stored (measured, not assumed).
+So the question and the record travel differently on purpose, and the record
+carries the routing now in force rather than the one that was refused — a record
+restating the refused routing would be re-judged by the rule that rejected it.
+
+### Why a redirect is spelled as a block, and what that costs
+
+`BLOCK` is the only arm Core forwards a `patch` on, and `patch.new_input` the
+only key it forwards — `CONSTRAIN`, `ALLOW` and `MONITOR` all arrive with the
+directive stripped (measured against Core, not assumed).
+
+That is why a redirect costs a refused attempt. What a policy means by "route it
+to openai instead" is a **constraint**, not a refusal: it is not saying the model
+may not be called. But the only channel that carries the instruction also
+declares the call refused, and a refused call must not then execute — so the SDK
+honours the refusal literally and opens a corrected call rather than quietly
+resuming the blocked one. The record stays true at the cost of one extra
+evaluation per redirect.
+
+If Core forwards a `patch` on `constrain`, this collapses to what it should be:
+one `llm_call`, allowed under a constraint, with the routing recorded inside it
+and no refused attempt at all. `constrain` is already accepted by
+`readRoutingDirective`, so policies would change one word and nothing in this
+SDK would need to change.
+
+### The two boundaries
+
+- **Only the first turn's request is rewritable.** From turn two the request
+  lives inside the engine, so a directive that would change where that turn's
+  prompt goes is *refused*, not ignored — the one thing worse than not applying
+  a constraint is appearing to. In practice a redirected run restates the
+  narrowed constraint from then on, so a satisfied policy stops firing.
+- **A halt still ends the session**, and an approval still holds the call open;
+  a routing directive only ever turns a *block* into a redirect.
+
+Turn it off with `preflightRouting: false` or `OPENBOX_PREFLIGHT_ROUTING=false` —
+which does not make routing unenforceable, only un-preventable: the provenance
+record still lands, and a policy can still halt the session on it.
 
 ## What governance costs
 
@@ -307,6 +474,7 @@ createOpenBoxGovernance({
   instrumentDatabases: true,        // default; pg/mysql2/mongodb/redis/ioredis
   instrumentFileIo: false,          // default
   spanConcurrency: 4,               // default; OPENBOX_SPAN_CONCURRENCY
+  preflightRouting: true,           // default; OPENBOX_PREFLIGHT_ROUTING
   captureRequestObjectBody: false,  // default — see below
   transport: myTransport,           // bring your own HTTP stack
 });
