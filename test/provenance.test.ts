@@ -304,3 +304,78 @@ describe('model substitution in the sealed record', () => {
     expect(provenanceAttributes(record)['openbox.model.honored']).toBeUndefined();
   });
 });
+
+/**
+ * The failover trail is the only evidence a provider let you down, and it was
+ * being thrown away: the record was parsed, the per-attempt latency dropped,
+ * and only the winning provider's timing survived. A provider that stalled for
+ * eight seconds and then lost the call left no trace, so every surviving number
+ * flattered the chain it belonged to.
+ */
+describe('the failover trail', () => {
+  const failover = {
+    data: {
+      provider_name: 'OpenAI',
+      model: 'openai/gpt-4o-mini',
+      latency: 900,
+      provider_responses: [
+        { provider_name: 'Azure', status: 503, error: 'upstream unavailable', latency: 8100 },
+        { provider_name: 'Together', status: 429, latency: 120 },
+        { provider_name: 'OpenAI', status: 200, latency: 640 },
+      ],
+    },
+  };
+
+  it('keeps the latency of every attempt, losers included', () => {
+    const p = normalizeGenerationRecord('gen-1', failover, null);
+
+    expect(p.attempts.map((a) => a.latencyMs)).toEqual([8100, 120, 640]);
+    // The slowest attempt is one that did NOT serve the call, which is exactly
+    // the case the old shape could not represent.
+    expect(Math.max(...p.attempts.map((a) => a.latencyMs ?? 0))).toBe(8100);
+    expect(p.latencyMs).toBe(900);
+  });
+
+  it('seals the whole trail, one object per attempt, in order', () => {
+    const attrs = provenanceAttributes(normalizeGenerationRecord('gen-1', failover, null));
+
+    expect(attrs['gen_ai.routing.attempts']).toEqual([
+      { provider: 'Azure', status: 503, latency_ms: 8100, error: 'upstream unavailable' },
+      { provider: 'Together', status: 429, latency_ms: 120, error: null },
+      { provider: 'OpenAI', status: 200, latency_ms: 640, error: null },
+    ]);
+  });
+
+  it('counts attempts, not failures — the winner is in the array', () => {
+    const attrs = provenanceAttributes(normalizeGenerationRecord('gen-1', failover, null));
+
+    // Three attempts means two failures. Reading this as three outages is the
+    // mistake the field name invites.
+    expect(attrs['gen_ai.routing.fallback_attempts']).toBe(3);
+    expect(attrs['gen_ai.routing.providers_tried']).toEqual(['Azure', 'Together', 'OpenAI']);
+  });
+
+  it('emits nothing when there was no trail at all', () => {
+    const attrs = provenanceAttributes(
+      normalizeGenerationRecord('gen-1', { data: { provider_name: 'OpenAI' } }, null),
+    );
+
+    expect(attrs['gen_ai.routing.attempts']).toBeUndefined();
+    expect(attrs['gen_ai.routing.fallback_attempts']).toBeUndefined();
+  });
+
+  it('survives an attempt with no provider name, which providers_tried drops', () => {
+    const p = normalizeGenerationRecord(
+      'gen-1',
+      { data: { provider_name: 'OpenAI', provider_responses: [{ status: 500 }, { provider_name: 'OpenAI', status: 200 }] } },
+      null,
+    );
+    const attrs = provenanceAttributes(p);
+
+    // providers_tried loses the nameless attempt, so it cannot be index-aligned
+    // with anything — the reason the trail is a list of objects.
+    expect(attrs['gen_ai.routing.providers_tried']).toEqual(['OpenAI']);
+    expect((attrs['gen_ai.routing.attempts'] as unknown[]).length).toBe(2);
+    expect((attrs['gen_ai.routing.attempts'] as { provider: unknown }[])[0].provider).toBeNull();
+  });
+});
