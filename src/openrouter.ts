@@ -78,6 +78,7 @@ import {
   abortActivity,
   clearActivityAbort,
   registerActivity,
+  setActivityRouting,
   runInScopeSync,
   awaitAssistantText,
   beginRoutingAttestation,
@@ -816,6 +817,12 @@ export function createOpenBoxGovernance(
       }
     }
 
+    // What this call is constrained to, stamped onto its spans so a routing
+    // policy can permit the call it just corrected instead of refusing it
+    // again — the policy is asked about this activity and about the HTTP
+    // request inside it, and only the activity carried the facts before.
+    setActivityRouting(activityId, run.declaredRouting, run.model);
+
     // Layer 2: register so the actual HTTPS call to OpenRouter is captured as
     // an http_request span under this activity (and can be aborted mid-flight
     // by a hook-level verdict).
@@ -921,6 +928,21 @@ export function createOpenBoxGovernance(
         ...(meta.completion ?? assistantText) != null
           ? { activity_output: safeSerialize({ result: meta.completion ?? assistantText }) }
           : {},
+        // The routing this call ran under, restated on its closure.
+        //
+        // A completion is evaluated by the policy like anything else, and a
+        // routing rule permits a call by seeing the constraint already in
+        // force. Without the claim here, the closure of a correctly routed
+        // call is judged on nothing and refused — measured: ActivityStarted
+        // allow, ActivityCompleted block, for one call in which nothing
+        // changed. The refusal path already restates its claim for exactly
+        // this reason; the success path has to as well.
+        ...(mw._config.preflightRouting && run.declaredRouting != null
+          ? (() => {
+              const claim = routingSpan(activityId, 'started', run.model, run.declaredRouting);
+              return { spans: [claim], span_count: 1 };
+            })()
+          : {}),
       }),
     );
 

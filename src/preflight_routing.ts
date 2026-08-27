@@ -292,10 +292,32 @@ export function routingIntentAttributes(
   model: string | null,
   declared: RequestedRouting | null,
 ): Record<string, unknown> {
-  const attrs: Record<string, unknown> = {
+  return {
     'openbox.routing.stage': 'preflight',
     'openbox.routing.declared': declared != null && declared.only != null,
+    ...routingConstraintAttributes(model, declared),
   };
+}
+
+/**
+ * The constraint itself, without the pre-flight framing.
+ *
+ * Stamped onto every span under a governed model call, so a policy can tell a
+ * call that is already routed from one that is not — using the SAME keys as the
+ * pre-flight claim. That matters: a routing rule needs one guard expression
+ * that holds at both decision points, because a policy is stateless and is
+ * asked about the activity and about the HTTP request inside it. Without this,
+ * the span evaluation had no routing facts at all and a rule that permitted the
+ * corrected call could not be written.
+ *
+ * `stage` is deliberately not included — these spans are not the routing
+ * decision, they are the work done under it.
+ */
+export function routingConstraintAttributes(
+  model: string | null,
+  declared: RequestedRouting | null,
+): Record<string, unknown> {
+  const attrs: Record<string, unknown> = {};
   if (model != null) attrs['gen_ai.request.model'] = model;
   if (declared?.only != null) attrs['openbox.routing.requested_only'] = declared.only;
   if (declared?.order != null) attrs['openbox.routing.requested_order'] = declared.order;
