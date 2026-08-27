@@ -21,6 +21,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { setTimeout as _st } from 'timers';
 import {
   extractRequestedRouting,
+  extractRequestedModel,
   provenanceAttributes,
   fetchGenerationRecord,
   type RequestedRouting,
@@ -1139,7 +1140,12 @@ const _llmSpanPending = new Set<string>();
  */
 const _pendingRouting = new Map<
   string,
-  { generationId: string; requested: RequestedRouting | null; entry: ActiveEntry }
+  {
+    generationId: string;
+    requested: RequestedRouting | null;
+    requestedModel: string | null;
+    entry: ActiveEntry;
+  }
 >();
 
 /**
@@ -1320,6 +1326,7 @@ function recordRoutingCandidate(
   _pendingRouting.set(activityId, {
     generationId,
     requested: extractRequestedRouting(requestBody),
+    requestedModel: extractRequestedModel(requestBody),
     entry,
   });
 }
@@ -1342,6 +1349,8 @@ export function beginRoutingAttestation(
    * honored comparison is inert for exactly the client this SDK governs.
    */
   declaredRouting?: RequestedRouting | null,
+  /** The model named on the caller's request object, same fallback reasoning. */
+  declaredModel?: string | null,
 ): void {
   const pending = _pendingRouting.get(activityId);
   if (pending == null) return;
@@ -1352,12 +1361,18 @@ export function beginRoutingAttestation(
     // Body-derived wins when present — it is what actually went over the wire.
     // The declared constraint is the fallback, not an override.
     const requested = pending.requested ?? declaredRouting ?? null;
-    const record = await fetchGenerationRecord(pending.generationId, requested, {
-      apiKey: _routingAttestation.apiKey!,
-      baseUrl: _routingAttestation.baseUrl,
-      // Our own lookup must never be captured as one of the agent's spans.
-      markInternal: (init) => ({ ...init, [OPENBOX_INTERNAL_REQUEST]: true }),
-    });
+    const requestedModel = pending.requestedModel ?? declaredModel ?? null;
+    const record = await fetchGenerationRecord(
+      pending.generationId,
+      requested,
+      {
+        apiKey: _routingAttestation.apiKey!,
+        baseUrl: _routingAttestation.baseUrl,
+        // Our own lookup must never be captured as one of the agent's spans.
+        markInternal: (init) => ({ ...init, [OPENBOX_INTERNAL_REQUEST]: true }),
+      },
+      requestedModel,
+    );
     if (record == null) {
       // Evidence that could not be collected is worth surfacing: the run is
       // fine, but its provenance has a hole in it.

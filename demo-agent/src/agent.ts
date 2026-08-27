@@ -64,6 +64,7 @@ async function main() {
       // reaches OpenRouter as-is — and the SDK reads it back off the same
       // body to decide `openbox.routing.honored`.
       ...routingConstraint(),
+      ...modelFallbacks(),
     });
 
     if (stream) {
@@ -108,6 +109,21 @@ async function main() {
           (summary.data_regions as string[])?.join(', ') || 'unknown'
         } · $${Number(summary.total_cost ?? 0).toFixed(5)} · ${verdict}`,
       );
+      // The second promise, from the same record: did the model that ran match
+      // the model that was asked for?
+      const modelHonored = summary.model_honored;
+      const modelVerdict =
+        modelHonored === undefined
+          ? 'unchecked (no concrete model requested)'
+          : modelHonored
+            ? 'AS REQUESTED'
+            : `SUBSTITUTED (${(summary.model_substitutions as string[])?.join('; ')})`;
+      log(
+        'provenance',
+        `model ${model()} · ran ${
+          (summary.models_served as string[])?.join(', ') || 'unknown'
+        } · ${modelVerdict}`,
+      );
       log('provenance', `verify at source: ${(summary.generation_ids as string[])?.join(', ')}`);
     }
   }
@@ -144,6 +160,25 @@ function routingConstraint(): Record<string, unknown> {
   }
   log('routing', `provider.only=${only.join(',')}`);
   return { provider };
+}
+
+/**
+ * Optional model fallback chain, from `OPENROUTER_MODELS` (comma-separated).
+ *
+ * OpenRouter serves the first model in the chain that can take the request, so
+ * the model that answers is not necessarily the one named in `model`. Declaring
+ * the chain is what makes that acceptable rather than a substitution: the SDK
+ * counts a model the caller listed here as honored, and anything else as a
+ * model nobody asked for.
+ */
+function modelFallbacks(): Record<string, unknown> {
+  const models = (process.env.OPENROUTER_MODELS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (models.length === 0) return {};
+  log('routing', `models=${models.join(',')}`);
+  return { models };
 }
 
 function requireEnv(names: string[]): void {
