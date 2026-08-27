@@ -117,6 +117,29 @@ export function readRoutingDirective(
 }
 
 /**
+ * Has this request already been narrowed to what the directive asks for?
+ *
+ * A block carrying a routing directive means "not as it was, but as I say". Once
+ * the request says exactly that, the block has nothing left to refuse — and
+ * enforcing it anyway is self-defeating: a policy is stateless, so it fires
+ * again on the very call it just redirected, and on the HTTP span inside that
+ * call. Measured before this existed: the routed call was refused at the wire
+ * and the run died with no answer and no error.
+ *
+ * Only the constraint being ALREADY satisfied justifies ignoring a block. A
+ * directive that would still change the request is a real refusal.
+ */
+export function isDirectiveSatisfied(
+  response: GovernanceVerdictResponse | null | undefined,
+  declared: RequestedRouting | null,
+): boolean {
+  const directive = readRoutingDirective(response);
+  if (directive == null) return false;
+  const narrowed = narrowRouting(declared, directive);
+  return narrowed.satisfiable && !narrowed.changed;
+}
+
+/**
  * Where this call is being routed, as a name: the provider the policy allows,
  * and the model it is serving.
  */

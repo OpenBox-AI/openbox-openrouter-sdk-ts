@@ -19,6 +19,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createOpenBoxGovernance } from '../src/openrouter';
 import {
+  isDirectiveSatisfied,
   applyRoutingToRequest,
   describeResolution,
   narrowRouting,
@@ -532,5 +533,72 @@ describe('routing to the model', () => {
 
     expect(transport.routingClaims()).toHaveLength(0);
     expect(transport.routingRecord()).toHaveLength(0);
+  });
+});
+
+// ── The refusal a routed request has already answered ────────────────────────
+//
+// A routing policy is stateless, so one prompt draws the same block three
+// times: on the call that gets redirected, on the retried call, and on the
+// retried call's own HTTP span. Core strips the directive from span verdicts by
+// design, so the span arrives as a bare block.
+//
+// Before this reasoning existed, the routed call was refused at the wire, the
+// engine swallowed the rejected fetch, and the run exited 0 with no answer, no
+// error, and the session left `pending`. That is the failure this guards.
+
+describe('isDirectiveSatisfied', () => {
+  const directive = (only: string[], allowFallbacks?: boolean) => ({
+    arm: 'block',
+    reason: 'this agent may only send prompts to openai',
+    patch: {
+      new_input: {
+        provider: {
+          only,
+          ...(allowFallbacks === undefined ? {} : { allow_fallbacks: allowFallbacks }),
+        },
+      },
+    },
+  });
+
+  it('is satisfied when the request already says exactly what the policy asks', () => {
+    expect(
+      isDirectiveSatisfied(directive(['openai'], false) as never, {
+        only: ['openai'],
+        allowFallbacks: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('is NOT satisfied while the directive would still change the request', () => {
+    // The real refusal: the caller asked for azure, the policy allows openai.
+    expect(
+      isDirectiveSatisfied(directive(['openai']) as never, { only: ['azure', 'openai'] }),
+    ).toBe(false);
+    // Nothing declared at all — the directive has everything left to do.
+    expect(isDirectiveSatisfied(directive(['openai']) as never, null)).toBe(false);
+  });
+
+  it('is NOT satisfied when the constraint cannot be met at all', () => {
+    // No provider in common: a refusal that must stand, not be waved through.
+    expect(
+      isDirectiveSatisfied(directive(['anthropic']) as never, { only: ['openai'] }),
+    ).toBe(false);
+  });
+
+  it('makes no claim about a verdict carrying no directive', () => {
+    // Core strips the patch from span verdicts, so this is the common case —
+    // and it must not be mistaken for "already satisfied".
+    expect(
+      isDirectiveSatisfied(
+        { arm: 'block', reason: 'this agent may only send prompts to openai' } as never,
+        { only: ['openai'], allowFallbacks: false },
+      ),
+    ).toBe(false);
+  });
+
+  it('makes no claim on an allow', () => {
+    expect(isDirectiveSatisfied({ arm: 'allow' } as never, { only: ['openai'] })).toBe(false);
+    expect(isDirectiveSatisfied(null, { only: ['openai'] })).toBe(false);
   });
 });
