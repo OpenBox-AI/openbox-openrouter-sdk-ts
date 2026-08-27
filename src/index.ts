@@ -95,6 +95,15 @@ export {
 } from './types';
 
 export {
+  applyRoutingToRequest,
+  describeRouting,
+  narrowRouting,
+  readRoutingDirective,
+  routingIntentAttributes,
+  type NarrowedRouting,
+} from './preflight_routing';
+
+export {
   extractRequestedRouting,
   readRequestedRouting,
   isRoutingHonored,

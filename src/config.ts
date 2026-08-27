@@ -83,6 +83,18 @@ export interface OpenBoxOpenRouterOptions extends Partial<OpenBoxCredentials> {
    * (`openrouterApiKey`, or `OPENROUTER_API_KEY`); inert without one.
    */
   attestRouting?: boolean;
+  /**
+   * State the routing constraint to Core BEFORE each model call goes out, so a
+   * policy can refuse an unconstrained prompt, narrow the provider allowlist,
+   * or stop the call outright while it is still un-sent.
+   *
+   * `attestRouting` is evidence after the fact; this is the gate before it. It
+   * rides on the LLMStarted evaluation the SDK already makes, so it costs no
+   * extra round-trip. Turning it off (`OPENBOX_PREFLIGHT_ROUTING=false`) does
+   * not make routing unenforceable, only un-preventable: the provenance record
+   * still lands, and a policy can still halt the session on it.
+   */
+  preflightRouting?: boolean;
   /** Key used to read generation records. Defaults to `OPENROUTER_API_KEY`. */
   openrouterApiKey?: string;
   instrumentFileIo?: boolean;
@@ -121,6 +133,7 @@ export interface GovernanceConfig {
   captureRequestObjectBody: boolean;
   spanConcurrency: number;
   attestRouting: boolean;
+  preflightRouting: boolean;
   openrouterApiKey: string | null;
   instrumentFileIo: boolean;
   instrumentDatabases: boolean;
@@ -179,6 +192,8 @@ export function mergeConfig(opts: OpenBoxOpenRouterOptions): GovernanceConfig {
       opts.spanConcurrency ?? envNumber('OPENBOX_SPAN_CONCURRENCY') ?? 4,
     attestRouting:
       opts.attestRouting ?? process.env.OPENBOX_ATTEST_ROUTING !== 'false',
+    preflightRouting:
+      opts.preflightRouting ?? process.env.OPENBOX_PREFLIGHT_ROUTING !== 'false',
     openrouterApiKey:
       opts.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? null,
     instrumentFileIo: opts.instrumentFileIo ?? false,
