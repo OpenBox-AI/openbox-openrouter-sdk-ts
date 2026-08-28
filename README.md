@@ -307,6 +307,16 @@ prompt goes out — so it is sealed under the signed session root at a point whe
 the outcome is not yet known, and cannot have been chosen to fit it — and
 compares it to the region OpenRouter reports afterwards.
 
+A directive can only reach the SDK on a refusing arm, which has a consequence
+worth stating: the call that triggered the directive was recorded by Core as
+**blocked**, so it must not then execute. Binding the list and carrying on would
+leave an `llm_call` stamped BLOCK with the 200 that served it nested inside —
+a row contradicting itself, and no amount of in-process reasoning unsays what
+Core wrote down. So the refused attempt is closed as failed, the approved list
+is recorded as its own routing step, and the call is **re-opened as a new
+activity** that carries the list and is evaluated fresh. Exactly the shape a
+routing redirect already had.
+
 Be clear about how strong this is. A provider constraint can be **enforced**:
 the SDK narrows `provider.only` on the outgoing request and a disjoint policy
 fails the call closed before the prompt is sent. A region constraint cannot be —

@@ -508,6 +508,12 @@ export function createOpenBoxGovernance(
             model: run.model,
             provider_only: routing.only ?? null,
             allow_fallbacks: routing.allowFallbacks ?? null,
+            // Where it may be PROCESSED, alongside who may serve it. On a
+            // residency-only directive this is the only field that changed,
+            // and without it the step reads as a re-route that re-routed
+            // nothing.
+            approved_regions: run.residency?.regions ?? null,
+            require_own_key: run.residency?.requireOwnKey ?? null,
             redirected_by_policy: reason,
           },
         ],
@@ -637,11 +643,24 @@ export function createOpenBoxGovernance(
   function resolveResidency(
     run: RunState,
     response: GovernanceVerdictResponse | null,
+    attempt: number,
   ): 'none' | 'bound' | 'satisfied' {
     const directive = readResidencyDirective(response);
     if (directive == null) return 'none';
     const narrowed = narrowResidency(run.residency, directive);
     if (!narrowed.changed) return 'satisfied';
+    // A policy that binds a new list on every attempt is narrowing forever.
+    // Each narrowing does shrink a finite set, so it would terminate — but not
+    // before filling the session with refused attempts, and a governance layer
+    // looping on its own corrections is the failure this cap exists for.
+    if (attempt >= MAX_ROUTING_ATTEMPTS) {
+      throw new GovernanceBlockedError(
+        'block',
+        `OpenBox governance block at llm_start: ${response?.reason ?? 'data residency set by policy'} — ` +
+          `the policy narrowed data residency to ${describeResidency(narrowed.residency)} again after ` +
+          `the call had already been re-opened under it; refusing rather than re-opening indefinitely`,
+      );
+    }
     run.residency = narrowed.residency;
     mw._config.logger.warn(
       `policy set data residency for this run to ${describeResidency(narrowed.residency)}` +
@@ -828,13 +847,13 @@ export function createOpenBoxGovernance(
     // recorded as blocked must not go on to execute. The corrected call is a
     // new one, evaluated fresh, and it is the one that carries the routing
     // record and the response.
-    // Read before the routing decision, so the approved list is bound to the
-    // run whether or not the same verdict also redirects the provider — the two
-    // arrive on one directive but are not conditional on each other.
-    const residency = resolveResidency(run, startResponse);
-
+    let residency: 'none' | 'bound' | 'satisfied';
     let routing: 'none' | 'satisfied' | 'redirect';
     try {
+      // Read before the routing decision, so the approved list is bound to the
+      // run whether or not the same verdict also redirects the provider — the
+      // two arrive on one directive but are not conditional on each other.
+      residency = resolveResidency(run, startResponse, attempt);
       routing = resolveRouting(run, startResponse, messages != null, attempt);
     } catch (err) {
       noteHalt(run, err);
@@ -845,7 +864,29 @@ export function createOpenBoxGovernance(
       throw err;
     }
 
-    if (routing === 'redirect') {
+    // A newly bound residency re-opens the call for the SAME reason a routing
+    // redirect does, and skipping that was a real hole: Core had recorded this
+    // activity as BLOCK, and the call then went out under it — a row whose
+    // start says the prompt was refused, sitting above the 200 that served it.
+    // Downgrading the verdict in-process does not unsay what Core wrote down;
+    // the only honest shape is to close this attempt as refused and evaluate a
+    // new one that carries the approved list.
+    //
+    // `satisfied` is not this case: there the constraint was already in force,
+    // so the policy is restating something this attempt already complies with
+    // and there is nothing to re-open.
+    const reopen = routing === 'redirect' || residency === 'bound';
+    if (reopen) {
+      const why =
+        startResponse?.reason ??
+        (routing === 'redirect' ? 'routing refused by policy' : 'data residency set by policy');
+      // What happened instead — named for whichever half of the directive
+      // actually changed, so the refused row explains its own successor.
+      const instead =
+        routing === 'redirect'
+          ? `${routingTarget(run.model, run.appliedRouting)} and retried`
+          : `re-opened under ${describeResidency(run.residency)} and retried`;
+
       // Close the refused attempt with the SAME claim it was refused on, so the
       // policy sees the same facts and its completion records the same verdict.
       // An activity whose start says BLOCK and whose completion says ALLOW is a
@@ -856,19 +897,12 @@ export function createOpenBoxGovernance(
           mw,
           buildEvent(mw, run.turn, 'LLMCompleted', activityId, 'llm_call', {
             status: 'failed',
-            error: toErrorInfo(
-              new GovernanceBlockedError(
-                'block',
-                startResponse?.reason ?? 'routing refused by policy',
-              ),
-            ),
+            error: toErrorInfo(new GovernanceBlockedError('block', why)),
             // Why it was refused, and what happened next — read together, the
             // two say the whole thing: this call was not sent, and the prompt
-            // went out under the routing the policy named instead.
+            // went out under the constraint the policy named instead.
             activity_output: safeSerialize({
-              result:
-                `blocked: ${startResponse?.reason ?? 'routing refused by policy'} — nothing was ` +
-                `sent; ${routingTarget(run.model, run.appliedRouting)} and retried`,
+              result: `blocked: ${why} — nothing was sent; ${instead}`,
             }),
             ...claim,
           }),
@@ -878,15 +912,18 @@ export function createOpenBoxGovernance(
       // The next attempt states what it is a retry of, so the pair reconciles.
       run.retriedFrom = activityId;
 
-      // Where it may go instead, as its own step.
+      // Where it may go, and where it may be processed, as its own step. On a
+      // residency-only directive nothing about the provider changed, so the
+      // routing in force is what the call already declared — the step is
+      // recording the residency, not a re-route.
       await routeModelCall(
         run,
-        run.appliedRouting!,
-        startResponse?.reason ?? null,
+        run.appliedRouting ?? run.declaredRouting ?? {},
+        why,
         run.routingStartedAtMs,
       );
 
-      // …and the call again, routed there.
+      // …and the call again, under both constraints.
       return openLlmActivity(run, messages, attempt + 1);
     }
 
