@@ -431,7 +431,7 @@ export function routingRecordSpans(
   times: { startMs: number; endMs: number },
   residency?: DataResidency | null,
 ): [Record<string, unknown>, Record<string, unknown>] {
-  const resolution = describeResolution(to, reason);
+  const resolution = describeResolution(to, reason, residency);
   const decorate = (span: Record<string, unknown>): Record<string, unknown> => {
     const attributes = span.attributes as Record<string, unknown>;
     attributes['openbox.routing.redirected_from'] =
@@ -451,12 +451,25 @@ export function routingRecordSpans(
 export function describeResolution(
   routing: RequestedRouting | null,
   narrowedBy: string | null,
+  /**
+   * The approved regions, when the policy states any. Appended rather than
+   * folded in, because it is a claim of a different strength: the provider
+   * clause says where the prompt WILL go, this one says only where it was
+   * permitted to be processed — nothing on the request can hold it there.
+   */
+  residency?: DataResidency | null,
 ): string {
   const where =
     routing?.only != null && routing.only.length > 0
       ? `routed via ${routing.only.join(', ')}`
       : 'routed with no provider constraint — any provider OpenRouter picks may serve it';
-  return narrowedBy != null ? `${where} — narrowed by policy: ${narrowedBy}` : where;
+  const region =
+    residency?.regions != null && residency.regions.length > 0
+      ? `, to be processed in ${residency.regions.join(', ')} (checked after the fact — no request field enforces it)`
+      : '';
+  return narrowedBy != null
+    ? `${where}${region} — narrowed by policy: ${narrowedBy}`
+    : `${where}${region}`;
 }
 
 /** How an applied directive is described on the wire and in a log line. */
