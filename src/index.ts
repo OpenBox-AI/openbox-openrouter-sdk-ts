@@ -95,6 +95,19 @@ export {
 } from './types';
 
 export {
+  describeResidency,
+  describeResidencyBreach,
+  describeResidencyOutcome,
+  isOwnKeyHonored,
+  isRegionApproved,
+  narrowResidency,
+  readResidency,
+  readResidencyDirective,
+  residencyAttributes,
+  type DataResidency,
+} from './residency';
+
+export {
   applyRoutingToRequest,
   describeRouting,
   narrowRouting,

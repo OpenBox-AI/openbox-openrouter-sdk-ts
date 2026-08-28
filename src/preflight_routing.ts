@@ -43,6 +43,8 @@
 
 import type { RequestedRouting } from './provenance';
 import { readRequestedRouting } from './provenance';
+import type { DataResidency } from './residency';
+import { residencyAttributes } from './residency';
 import { stableSpanId, type GovernanceVerdictResponse } from './types';
 import { patchFrom, verdictFromString } from './verdict';
 
@@ -291,11 +293,12 @@ export function applyRoutingToRequest<T>(request: T, routing: RequestedRouting):
 export function routingIntentAttributes(
   model: string | null,
   declared: RequestedRouting | null,
+  residency: DataResidency | null = null,
 ): Record<string, unknown> {
   return {
     'openbox.routing.stage': 'preflight',
     'openbox.routing.declared': declared != null && declared.only != null,
-    ...routingConstraintAttributes(model, declared),
+    ...routingConstraintAttributes(model, declared, residency),
   };
 }
 
@@ -316,8 +319,15 @@ export function routingIntentAttributes(
 export function routingConstraintAttributes(
   model: string | null,
   declared: RequestedRouting | null,
+  residency: DataResidency | null = null,
 ): Record<string, unknown> {
   const attrs: Record<string, unknown> = {};
+  // Where the prompt may be PROCESSED, alongside who may serve it. Stated here
+  // even though nothing in the request can enforce it, because stating it
+  // before the call is what makes the after-the-fact comparison evidence: the
+  // approved list is sealed under the session root at a point where the answer
+  // is not yet known, so it cannot have been chosen to fit the outcome.
+  if (residency != null) Object.assign(attrs, residencyAttributes(residency));
   if (model != null) attrs['gen_ai.request.model'] = model;
   if (declared?.only != null) attrs['openbox.routing.requested_only'] = declared.only;
   if (declared?.order != null) attrs['openbox.routing.requested_order'] = declared.order;
@@ -357,10 +367,16 @@ export function routingSpan(
    * the call it preceded.
    */
   times?: { startMs: number; endMs: number },
+  /**
+   * The regions this agent's policy approves, when it states any. Carried on
+   * the routing span rather than on the request because there is no request
+   * field for it — see `residency.ts`.
+   */
+  residency?: DataResidency | null,
 ): Record<string, unknown> {
   const startMs = times?.startMs ?? Date.now();
   const endMs = times?.endMs ?? startMs;
-  const attributes = routingIntentAttributes(model, routing);
+  const attributes = routingIntentAttributes(model, routing, residency ?? null);
   if (resolution != null) attributes['openbox.routing.resolution'] = resolution;
   return {
     span_id: stableSpanId(`${activityId}|routing`),
@@ -413,6 +429,7 @@ export function routingRecordSpans(
   to: RequestedRouting,
   reason: string | null,
   times: { startMs: number; endMs: number },
+  residency?: DataResidency | null,
 ): [Record<string, unknown>, Record<string, unknown>] {
   const resolution = describeResolution(to, reason);
   const decorate = (span: Record<string, unknown>): Record<string, unknown> => {
@@ -422,8 +439,8 @@ export function routingRecordSpans(
     return span;
   };
   return [
-    decorate(routingSpan(activityId, 'started', model, to, undefined, times)),
-    decorate(routingSpan(activityId, 'completed', model, to, resolution, times)),
+    decorate(routingSpan(activityId, 'started', model, to, undefined, times, residency)),
+    decorate(routingSpan(activityId, 'completed', model, to, resolution, times, residency)),
   ];
 }
 

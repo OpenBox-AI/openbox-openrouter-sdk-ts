@@ -31,6 +31,9 @@
  * answer. Without an OpenRouter key it is silently off.
  */
 
+import type { DataResidency } from './residency';
+import { isOwnKeyHonored, isRegionApproved, residencyAttributes } from './residency';
+
 const GENERATION_PATH = '/api/v1/generation';
 
 /**
@@ -90,6 +93,25 @@ export interface RoutingProvenance {
    * picking the model IS the promise there, so nothing was substituted.
    */
   modelHonored: boolean | null;
+  /**
+   * The residency constraint in force for this call: the regions the policy
+   * approved, and whether it required your own key.
+   *
+   * It comes from the policy rather than from the request, because there is no
+   * request field for it — see `residency.ts`.
+   */
+  residency: DataResidency | null;
+  /**
+   * Whether `dataRegion` is inside the approved list.
+   * `null` when no list was stated, or when OpenRouter reported no region —
+   * an unreported region is unchecked, never a pass.
+   */
+  regionHonored: boolean | null;
+  /**
+   * Whether the call ran on your own key, when the policy required it.
+   * `null` when own-key usage was never required.
+   */
+  ownKeyHonored: boolean | null;
 }
 
 /** The routing constraints carried on the request itself. */
@@ -253,6 +275,7 @@ export function normalizeGenerationRecord(
   raw: unknown,
   requested: RequestedRouting | null,
   requestedModel: string | null = null,
+  residency: DataResidency | null = null,
 ): RoutingProvenance {
   const root = (raw != null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   // The endpoint wraps the record in `data`.
@@ -277,23 +300,28 @@ export function normalizeGenerationRecord(
 
   const provider = asString(record.provider_name);
   const model = asString(record.model);
+  const dataRegion = asString(record.data_region);
+  const isByok = typeof record.is_byok === 'boolean' ? record.is_byok : null;
   return {
     generationId,
     provider,
     model,
-    dataRegion: asString(record.data_region),
+    dataRegion,
     totalCost: asNumber(record.total_cost),
     upstreamCost: asNumber(record.upstream_inference_cost),
     tokensPrompt: asNumber(record.tokens_prompt),
     tokensCompletion: asNumber(record.tokens_completion),
     latencyMs: asNumber(record.latency),
     finishReason: asString(record.finish_reason),
-    isByok: typeof record.is_byok === 'boolean' ? record.is_byok : null,
+    isByok,
     attempts,
     requested,
     honored: isRoutingHonored(provider, requested),
     requestedModel,
     modelHonored: isModelHonored(model, requestedModel, requested?.models),
+    residency,
+    regionHonored: isRegionApproved(dataRegion, residency),
+    ownKeyHonored: isOwnKeyHonored(isByok, residency),
   };
 }
 
@@ -319,6 +347,7 @@ export async function fetchGenerationRecord(
   requested: RequestedRouting | null,
   opts: FetchProvenanceOptions,
   requestedModel: string | null = null,
+  residency: DataResidency | null = null,
 ): Promise<RoutingProvenance | null> {
   const base = (opts.baseUrl ?? 'https://openrouter.ai').replace(/\/$/, '');
   const url = `${base}${GENERATION_PATH}?id=${encodeURIComponent(generationId)}`;
@@ -355,7 +384,7 @@ export async function fetchGenerationRecord(
       if (response.status === 404) continue; // not written yet — try once more
       if (!response.ok) return null;
       const body = (await response.json()) as unknown;
-      return normalizeGenerationRecord(generationId, body, requested, requestedModel);
+      return normalizeGenerationRecord(generationId, body, requested, requestedModel, residency);
     } catch {
       continue; // transient — the loop's backoff is the retry
     } finally {
@@ -421,5 +450,12 @@ export function provenanceAttributes(p: RoutingProvenance): Record<string, unkno
   if (p.honored != null) attrs['openbox.routing.honored'] = p.honored;
   put('openbox.model.requested', p.requestedModel);
   if (p.modelHonored != null) attrs['openbox.model.honored'] = p.modelHonored;
+  // The residency claim travels WITH the record it is judged against, not only
+  // on the pre-flight span, so the comparison is legible from this one span
+  // alone — a reader (or a policy) holding the provenance row should not have
+  // to go and find the routing row to learn what the approved list was.
+  if (p.residency != null) Object.assign(attrs, residencyAttributes(p.residency));
+  if (p.regionHonored != null) attrs['openbox.residency.region_honored'] = p.regionHonored;
+  if (p.ownKeyHonored != null) attrs['openbox.residency.own_key_honored'] = p.ownKeyHonored;
   return attrs;
 }

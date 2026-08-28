@@ -77,6 +77,12 @@
   .provenance b { color: var(--ink); font-weight: 560; }
   .provenance .honored { color: var(--accent); }
   .provenance .dishonored { color: var(--stop); }
+  .provenance .unchecked { color: var(--warn); }
+  .residency { margin-top: 5px; }
+  .residency .label {
+    text-transform: uppercase; letter-spacing: .06em; font-size: 11px;
+    font-weight: 620; color: var(--muted); margin-right: 7px;
+  }
   .ms { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12.5px; }
   .detail {
     grid-column: 2 / -1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -287,12 +293,78 @@ form.addEventListener('submit', async (e) => {
       bits.push('unconstrained — nothing was promised');
     }
     line.innerHTML = bits.join(' · ');
+
+    // Where the data was processed — its own line, because it answers a
+    // different question from "who served it" and is judged against a list
+    // that lives somewhere else entirely: the policy, not the request.
+    line.appendChild(residency(ev));
+
     if ((ev.generationIds || []).length) {
       const verify = document.createElement('div');
       verify.textContent = 'verify at source: ' + ev.generationIds.join(', ');
       line.appendChild(verify);
     }
     card.appendChild(line);
+  }
+
+  /**
+   * The residency line: the regions the calls actually ran in, the list the
+   * policy approved, and how many calls the comparison could be made on.
+   *
+   * The coverage figure is not decoration. OpenRouter reports no region for
+   * some endpoints, and a call whose region is unknown is unchecked — counting
+   * it as approved would be exactly the flattering arithmetic this panel
+   * exists to replace. So "2 / 2 calls checked" is shown next to the verdict,
+   * and when nothing could be checked the line says so instead of passing.
+   */
+  function residency(ev) {
+    const el = document.createElement('div');
+    el.className = 'residency';
+    const ran = (ev.regions || []);
+    const approved = (ev.approvedRegions || []);
+    const checked = ev.regionsChecked || 0;
+    const calls = ev.modelCalls || 0;
+    const coverage = checked + ' / ' + calls + (calls === 1 ? ' call checked' : ' calls checked');
+
+    const where = ran.length
+      ? 'processed in <b>' + ran.join(', ') + '</b>'
+      : 'processed in a region OpenRouter did not report';
+
+    let verdict;
+    if (!approved.length) {
+      verdict = '<span class="unchecked">no approved region list</span> — nothing was promised';
+    } else if (!checked) {
+      verdict =
+        'approved: ' + approved.join(', ') +
+        ' · <span class="unchecked">unchecked</span> — no region was reported';
+    } else if (ev.residencyHonored === true) {
+      verdict =
+        '<span class="honored">approved</span> (' + approved.join(', ') + ')' + ' · ' + coverage;
+    } else {
+      // Naming the offending region separately only adds something when the
+      // run touched more than one — otherwise it restates "processed in …".
+      const offending = ev.unapprovedRegions || [];
+      const named =
+        offending.length && !(ran.length === 1 && offending.length === 1)
+          ? ', this ran in ' + offending.join(', ')
+          : '';
+      verdict =
+        '<span class="dishonored">NOT approved</span> — the policy allows ' +
+        approved.join(', ') + named + ' · ' + coverage;
+    }
+
+    // Whose key paid for it. Only a verdict when the policy asked for one —
+    // a call on OpenRouter credit breaks no promise nobody made.
+    let key = ev.ownKeyCalls ? ', on your own provider key' : ", on OpenRouter's credit";
+    if (ev.ownKeyHonored === false) {
+      key += ' — <span class="dishonored">the policy requires your own key</span>';
+    } else if (ev.ownKeyHonored === true) {
+      key = ', on your own provider key — <span class="honored">as required</span>';
+    }
+
+    el.innerHTML =
+      '<span class="label">where the data was processed</span>' + where + ' · ' + verdict + key;
+    return el;
   }
 
   function activity(ev) {
