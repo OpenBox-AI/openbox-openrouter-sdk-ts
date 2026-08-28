@@ -89,6 +89,12 @@ import {
 } from './span_processor';
 import { readRequestedRouting, type RequestedRouting, type RoutingProvenance } from './provenance';
 import {
+  describeResidency,
+  narrowResidency,
+  readResidencyDirective,
+  type DataResidency,
+} from './residency';
+import {
   applyRoutingToRequest,
   describeResolution,
   describeRouting,
@@ -185,6 +191,16 @@ class RunState {
    * constraint, so later turns state the narrowed one, not the original.
    */
   appliedRouting: RequestedRouting | null = null;
+  /**
+   * The approved-region list this run is governed by, once a policy states one.
+   *
+   * Unlike `declaredRouting` there is no request-side counterpart to read it
+   * from: OpenRouter has no region field, so residency exists only as something
+   * the policy asserts and the generation record is later measured against. It
+   * accumulates across turns — a directive can narrow it and never widen it —
+   * so a later turn cannot quietly re-approve a region an earlier one removed.
+   */
+  residency: DataResidency | null = null;
   /** The model the caller asked for, reported with the routing. */
   model: string | null = null;
   /**
@@ -537,6 +553,7 @@ export function createOpenBoxGovernance(
       routing,
       reason,
       { startMs: startedAtMs, endMs: Date.now() },
+      run.residency,
     );
     for (const span of [routedStart, routedEnd]) {
       await evaluateActivitySpan(activityId, span).catch(() => undefined);
@@ -592,6 +609,49 @@ export function createOpenBoxGovernance(
    * engine rather than to us (turn two onwards), where a constraint that cannot
    * be applied must be refused rather than appear to have been applied.
    */
+  /**
+   * Take the residency constraint off a verdict, if it carries one.
+   *
+   * Deliberately does not affect control flow. There is no request field that
+   * decides where a call is processed, so a residency directive cannot be
+   * applied to the outgoing request the way a provider allowlist can — and
+   * pretending otherwise, by refusing the call as though the constraint had
+   * been enforced, would claim prevention where there is only evidence. What it
+   * does instead is bind the approved list to this run before the prompt goes
+   * out, so it is stamped on the routing span, sealed under the session's
+   * signed root, and compared to the region OpenRouter reports afterwards.
+   *
+   * A directive that narrows to nothing is kept as the empty list rather than
+   * discarded: "no region is approved" then fails every subsequent check
+   * loudly, which is the correct reading of two policies that agree on nowhere.
+   *
+   * What it returns matters for the verdict, though. Core forwards a directive
+   * only on a refusing arm, so "these are the approved regions" necessarily
+   * arrives as a BLOCK — and a block nobody disarms kills the run. That is what
+   * happened when this returned nothing: the policy stated an approved list,
+   * the SDK recorded it, and the prompt was then refused for a constraint it
+   * now satisfied. `bound` and `satisfied` both mean the run complies, and the
+   * caller downgrades the block to allow on either, exactly as it does for a
+   * routing directive the request already met.
+   */
+  function resolveResidency(
+    run: RunState,
+    response: GovernanceVerdictResponse | null,
+  ): 'none' | 'bound' | 'satisfied' {
+    const directive = readResidencyDirective(response);
+    if (directive == null) return 'none';
+    const narrowed = narrowResidency(run.residency, directive);
+    if (!narrowed.changed) return 'satisfied';
+    run.residency = narrowed.residency;
+    mw._config.logger.warn(
+      `policy set data residency for this run to ${describeResidency(narrowed.residency)}` +
+        (narrowed.satisfiable
+          ? ''
+          : ' — which leaves no approved region, so every call will be recorded as unapproved'),
+    );
+    return 'bound';
+  }
+
   function resolveRouting(
     run: RunState,
     response: GovernanceVerdictResponse | null,
@@ -686,7 +746,7 @@ export function createOpenBoxGovernance(
     // The claim a policy decides this call on, built once: it is sent with the
     // call, and again with its closure if the call is refused.
     const routingClaimSpan = mw._config.preflightRouting
-      ? routingSpan(activityId, 'started', run.model, run.declaredRouting)
+      ? routingSpan(activityId, 'started', run.model, run.declaredRouting, undefined, undefined, run.residency)
       : null;
     // A retry names the attempt it replaces. Read together, the refused
     // activity and this one are one model call: attempt 1 never sent, attempt 2
@@ -768,6 +828,11 @@ export function createOpenBoxGovernance(
     // recorded as blocked must not go on to execute. The corrected call is a
     // new one, evaluated fresh, and it is the one that carries the routing
     // record and the response.
+    // Read before the routing decision, so the approved list is bound to the
+    // run whether or not the same verdict also redirects the provider — the two
+    // arrive on one directive but are not conditional on each other.
+    const residency = resolveResidency(run, startResponse);
+
     let routing: 'none' | 'satisfied' | 'redirect';
     try {
       routing = resolveRouting(run, startResponse, messages != null, attempt);
@@ -830,7 +895,15 @@ export function createOpenBoxGovernance(
         const result = enforceVerdict(
           // A directive the request already complies with has nothing left to
           // enforce: the policy is restating a constraint that is in force.
-          routing === 'satisfied'
+          //
+          // A residency directive counts here too, and it is the ONLY way one
+          // can be honoured at all: it arrives on a block because that is the
+          // only arm Core forwards a patch on, and there is no request field to
+          // apply it to, so the run complies by carrying the approved list —
+          // which it now does. `routing === 'none'` guards it: a block that
+          // also states an unmet provider constraint is a real refusal, and
+          // that half is decided above, not disarmed here.
+          routing === 'satisfied' || (routing === 'none' && residency !== 'none')
             ? { ...startResponse, arm: 'allow', verdict: 'allow', action: 'allow' }
             : startResponse,
           'llm_start',
@@ -853,7 +926,7 @@ export function createOpenBoxGovernance(
     // policy can permit the call it just corrected instead of refusing it
     // again — the policy is asked about this activity and about the HTTP
     // request inside it, and only the activity carried the facts before.
-    setActivityRouting(activityId, run.declaredRouting, run.model);
+    setActivityRouting(activityId, run.declaredRouting, run.model, run.residency);
 
     // Layer 2: register so the actual HTTPS call to OpenRouter is captured as
     // an http_request span under this activity (and can be aborted mid-flight
@@ -929,7 +1002,7 @@ export function createOpenBoxGovernance(
     // awaited: OpenRouter writes the generation record a moment after the
     // response, and no turn should wait on evidence nobody is blocked on. The
     // run drains it before closing (see finalizeRun).
-    beginRoutingAttestation(activityId, run.declaredRouting, run.model);
+    beginRoutingAttestation(activityId, run.declaredRouting, run.model, run.residency);
 
     await unregisterActivity(activityId);
 
@@ -971,7 +1044,15 @@ export function createOpenBoxGovernance(
         // this reason; the success path has to as well.
         ...(mw._config.preflightRouting && run.declaredRouting != null
           ? (() => {
-              const claim = routingSpan(activityId, 'started', run.model, run.declaredRouting);
+              const claim = routingSpan(
+                activityId,
+                'started',
+                run.model,
+                run.declaredRouting,
+                undefined,
+                undefined,
+                run.residency,
+              );
               return { spans: [claim], span_count: 1 };
             })()
           : {}),
@@ -1663,6 +1744,25 @@ function routingSummary(records: RoutingProvenance[]): Record<string, unknown> |
     ...new Set(records.map((r) => r.model).filter((m): m is string => m != null)),
   ];
   const modelChecked = records.filter((r) => r.modelHonored != null);
+  // "Where was the data processed?" — the regions the calls actually ran in,
+  // the list the policy approved, and whether every checkable call stayed
+  // inside it. Coverage is reported rather than assumed: a call whose region
+  // OpenRouter never reported is counted as unchecked, not as approved, so
+  // `regions_checked` below is what the honored figure is honest about.
+  const approvedRegions = [
+    ...new Set(records.flatMap((r) => r.residency?.regions ?? [])),
+  ];
+  const regionChecked = records.filter((r) => r.regionHonored != null);
+  const unapproved = [
+    ...new Set(
+      regionChecked
+        .filter((r) => r.regionHonored === false)
+        .map((r) => r.dataRegion)
+        .filter((d): d is string => d != null),
+    ),
+  ];
+  const ownKeyChecked = records.filter((r) => r.ownKeyHonored != null);
+  const byokCalls = records.filter((r) => r.isByok === true).length;
   const substituted = [
     ...new Set(
       modelChecked
@@ -1684,6 +1784,18 @@ function routingSummary(records: RoutingProvenance[]): Record<string, unknown> |
       ? { model_honored: modelChecked.every((r) => r.modelHonored === true) }
       : {}),
     ...(substituted.length > 0 ? { model_substitutions: substituted } : {}),
+    ...(approvedRegions.length > 0 ? { approved_regions: approvedRegions } : {}),
+    ...(regionChecked.length > 0
+      ? {
+          regions_checked: regionChecked.length,
+          residency_honored: regionChecked.every((r) => r.regionHonored === true),
+        }
+      : {}),
+    ...(unapproved.length > 0 ? { unapproved_regions: unapproved } : {}),
+    ...(byokCalls > 0 ? { own_key_calls: byokCalls } : {}),
+    ...(ownKeyChecked.length > 0
+      ? { own_key_honored: ownKeyChecked.every((r) => r.ownKeyHonored === true) }
+      : {}),
     generation_ids: records.map((r) => r.generationId),
   };
 }

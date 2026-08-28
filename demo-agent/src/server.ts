@@ -285,6 +285,20 @@ async function runAgent(
         requested: (summary.routing_requested_only as string[] | undefined) ?? null,
         honored: summary.routing_honored ?? null,
         cost: summary.total_cost ?? null,
+        // Where the data was processed, against the regions the POLICY
+        // approved — there is no request field for this, so the approved list
+        // and the region served come from two different places and the page is
+        // showing the comparison, not a restatement.
+        approvedRegions: (summary.approved_regions as string[] | undefined) ?? null,
+        // How many calls the region check could actually be made on. A region
+        // OpenRouter did not report is unchecked, and saying "0 breaches" over
+        // calls nobody checked is the flattering number this avoids.
+        regionsChecked: (summary.regions_checked as number | undefined) ?? 0,
+        residencyHonored: summary.residency_honored ?? null,
+        unapprovedRegions: (summary.unapproved_regions as string[] | undefined) ?? null,
+        ownKeyCalls: (summary.own_key_calls as number | undefined) ?? 0,
+        ownKeyHonored: summary.own_key_honored ?? null,
+        modelCalls: (summary.model_calls as number | undefined) ?? 0,
         generationIds: (summary.generation_ids as string[] | undefined) ?? [],
       });
     }

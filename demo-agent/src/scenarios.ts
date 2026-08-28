@@ -21,7 +21,9 @@ export type ScenarioName =
   | 'halt'
   | 'approval'
   | 'routing'
-  | 'routing-refuse';
+  | 'routing-refuse'
+  | 'residency'
+  | 'residency-breach';
 
 export interface Scenario {
   readonly name: ScenarioName;
@@ -49,7 +51,16 @@ export interface Scenario {
    * Gate the pre-flight routing span instead of the refund tool. The policy
    * decides where the prompt may GO, before it goes anywhere.
    */
-  readonly gate?: 'refund' | 'routing';
+  readonly gate?: 'refund' | 'routing' | 'residency';
+  /**
+   * The regions this scenario's policy approves, for the residency arms.
+   *
+   * Not a field on the request: OpenRouter has no region parameter, so an
+   * approved list can only come from the policy. This is what makes the arm
+   * worth showing — the constraint and the evidence come from two different
+   * places and are compared.
+   */
+  readonly regions?: string[];
 }
 
 const REFUND_PROMPT = 'Order A-1003 arrived damaged. Check it and refund me in full.';
@@ -120,6 +131,32 @@ export const SCENARIOS: readonly Scenario[] = [
     gate: 'routing',
     provider: { only: ['azure'] },
   },
+  {
+    name: 'residency',
+    label: 'Residency approved',
+    summary:
+      'The policy approves the `global` zone — which is what a non-regional OpenRouter endpoint actually reports.',
+    expect:
+      'The call runs. OpenRouter reports data_region=global, the approved list says global, and the provenance line reads approved.',
+    prompt: REFUND_PROMPT,
+    decision: 'BLOCK',
+    reason: 'prompts from this agent may only be processed in the global zone',
+    gate: 'residency',
+    regions: ['global'],
+  },
+  {
+    name: 'residency-breach',
+    label: 'Residency breached',
+    summary:
+      'The same rule, approving `eu` only. Nothing in the request can steer the region, so the call still goes out.',
+    expect:
+      'The prompt IS sent — there is no request field to stop it with — and comes back processed in global. The provenance line reads NOT approved: evidence of a breach, not prevention of one.',
+    prompt: REFUND_PROMPT,
+    decision: 'BLOCK',
+    reason: 'prompts from this agent may only be processed in the eu',
+    gate: 'residency',
+    regions: ['eu'],
+  },
 ];
 
 export function findScenario(name: string | undefined): Scenario {
@@ -153,6 +190,17 @@ export async function withDb<T>(fn: (client: PgClient) => Promise<T>): Promise<T
   } finally {
     await client.end().catch(() => undefined);
   }
+}
+
+/**
+ * A rego set literal — `{"global"}` — for comparing against the lowercased set
+ * the rule builds from the span. An empty approved list is `set()`, which is
+ * rego's spelling for the empty set; `{}` there would be an empty OBJECT and
+ * would never compare equal to one.
+ */
+function regoSet(values: readonly string[]): string {
+  if (values.length === 0) return 'set()';
+  return `{${values.map((v) => JSON.stringify(v.toLowerCase())).join(', ')}}`;
 }
 
 /** The rego module for one arm. Package name must match the policy's path. */
@@ -205,6 +253,39 @@ result := {
 } if {
 	routing
 	declared != {"openai"}
+}
+`;
+  }
+
+  // Residency: the same routing gate, carrying an approved-region list instead
+  // of (or as well as) a provider allowlist.
+  //
+  // It rides on the routing directive because it IS the same policy statement —
+  // "openai only, processed in the EU" is one sentence — and because a refusing
+  // arm's `new_input` is the only patch Core forwards. The SDK reads the
+  // residency half, binds it to the run, and stamps it on the routing span
+  // before the prompt goes out; it does NOT try to apply it to the request,
+  // because there is no request field it could apply it to.
+  //
+  // The rule stops firing once the run already carries the approved list, the
+  // same way the provider rule stops once the allowlist is satisfied —
+  // otherwise a stateless policy refuses its own correction on every turn.
+  if (scenario.gate === 'residency') {
+    return `${head}
+routing := span if {
+	some span in input.spans
+	span.hook_type == "llm_routing_request"
+}
+
+approved := {lower(r) | some r in object.get(routing.attributes, "openbox.residency.approved_regions", [])}
+
+result := {
+	"decision": "BLOCK",
+	"reason": ${JSON.stringify(scenario.reason ?? 'data residency constrained by policy')},
+	"patch": {"new_input": {"residency": {"regions": ${JSON.stringify(scenario.regions ?? [])}}}},
+} if {
+	routing
+	approved != ${regoSet(scenario.regions ?? [])}
 }
 `;
   }

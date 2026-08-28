@@ -281,8 +281,52 @@ What lands on each model call:
 | `gen_ai.upstream.is_byok` | whether your key was used |
 | `gen_ai.routing.providers_tried` · `…fallback_attempts` | the failover trail |
 | `openbox.routing.requested_only` · `…honored` | what was asked for, and whether it held |
+| `openbox.residency.approved_regions` · `…region_honored` | the regions the policy approved, and whether this call stayed inside them |
+| `openbox.residency.require_own_key` · `…own_key_honored` | whether your own provider key was required, and whether it was used |
 | `gen_ai.response.model` · `openbox.model.requested` · `openbox.model.honored` | the model that ran, the model asked for, and whether they match |
 | `gen_ai.generation.id` | OpenRouter's receipt number, so any claim can be re-checked at source |
+
+### Where the data was processed
+
+`data_region` and `is_byok` were collected from the first version and compared
+against nothing — "it ran in `global`" is not an answer to "did any of our
+prompts leave the EU". The missing half is an approved list, and it cannot come
+from the request: OpenRouter accepts `provider.only` and honours it, but there
+is no `provider.region` to send. So the approved list lives in **policy**, and
+arrives the way a routing directive does — on a refusing arm, under
+`patch.new_input`:
+
+```json
+{"decision": "BLOCK",
+ "reason": "prompts from this agent may only be processed in the eu",
+ "patch": {"new_input": {"residency": {"regions": ["eu"], "require_own_key": true}}}}
+```
+
+The SDK binds that list to the run, stamps it on the routing span *before* the
+prompt goes out — so it is sealed under the signed session root at a point where
+the outcome is not yet known, and cannot have been chosen to fit it — and
+compares it to the region OpenRouter reports afterwards.
+
+Be clear about how strong this is. A provider constraint can be **enforced**:
+the SDK narrows `provider.only` on the outgoing request and a disjoint policy
+fails the call closed before the prompt is sent. A region constraint cannot be —
+nothing the SDK writes into the request influences where the call lands, so a
+residency directive is never applied to a request. It produces **evidence**: the
+breach lands on the provenance span as
+`openbox.residency.region_honored = false`, which a policy refuses the *next*
+call on and halts the session. One call later than you would like, and honest
+about it.
+
+Two things follow from that, both deliberate:
+
+- **An unreported region is `unchecked`, never a pass.** `regions_checked` in
+  the summary says how many calls the comparison could actually be made on, so
+  "no breaches" is never quietly averaged over calls nobody checked.
+- **`global` is compared literally.** Measured: a plain `openai/gpt-4o-mini`
+  call returns `data_region: "global"` — and `provider_name: "Azure"`. `global`
+  means "no regional endpoint was used", which is exactly what an operator who
+  approved `["eu"]` needs to see fail. Approving `["global"]` is the honest way
+  to say any zone is fine.
 
 ### Timing, and what it costs you
 

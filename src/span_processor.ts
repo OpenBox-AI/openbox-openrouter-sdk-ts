@@ -20,6 +20,7 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { setTimeout as _st } from 'timers';
 import { routingConstraintAttributes } from './preflight_routing';
+import type { DataResidency } from './residency';
 import {
   extractRequestedRouting,
   extractRequestedModel,
@@ -337,7 +338,7 @@ async function evaluateHookSpan(
   // asked about. Same keys as the pre-flight claim, so one guard covers both.
   const inForce = _activityRouting.get(entry.ctx.activity_id);
   if (inForce != null) {
-    const stamped = routingConstraintAttributes(inForce.model, inForce.routing);
+    const stamped = routingConstraintAttributes(inForce.model, inForce.routing, inForce.residency);
     if (Object.keys(stamped).length > 0) {
       spanData.attributes = {
         ...(spanData.attributes as Record<string, unknown> | undefined),
@@ -1177,7 +1178,11 @@ const _llmSpanPending = new Set<string>();
  */
 const _activityRouting = new Map<
   string,
-  { routing: RequestedRouting | null; model: string | null }
+  {
+    routing: RequestedRouting | null;
+    model: string | null;
+    residency: DataResidency | null;
+  }
 >();
 
 /** Record the constraint in force for an activity, for stamping onto its spans. */
@@ -1185,8 +1190,15 @@ export function setActivityRouting(
   activityId: string,
   routing: RequestedRouting | null,
   model: string | null,
+  /**
+   * The approved-region list in force, when the agent's policy states one. On
+   * the span for the same reason the provider allowlist is: a residency rule is
+   * stateless too, and is asked about the HTTP request inside the call as well
+   * as about the call itself.
+   */
+  residency: DataResidency | null = null,
 ): void {
-  _activityRouting.set(activityId, { routing, model });
+  _activityRouting.set(activityId, { routing, model, residency });
 }
 
 /**
@@ -1409,6 +1421,12 @@ export function beginRoutingAttestation(
   declaredRouting?: RequestedRouting | null,
   /** The model named on the caller's request object, same fallback reasoning. */
   declaredModel?: string | null,
+  /**
+   * The approved-region list this call ran under. Unlike the two above it has
+   * no request-body fallback, because it never travels on the request: it comes
+   * from the policy, and this is its only route into the record.
+   */
+  residency?: DataResidency | null,
 ): void {
   const pending = _pendingRouting.get(activityId);
   if (pending == null) return;
@@ -1430,6 +1448,7 @@ export function beginRoutingAttestation(
         markInternal: (init) => ({ ...init, [OPENBOX_INTERNAL_REQUEST]: true }),
       },
       requestedModel,
+      residency ?? null,
     );
     if (record == null) {
       // Evidence that could not be collected is worth surfacing: the run is
