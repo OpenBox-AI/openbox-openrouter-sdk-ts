@@ -406,6 +406,54 @@ export interface OpenBoxGovernance {
    * never arrived).
    */
   routingSummaries(): ReadonlyArray<Record<string, unknown>>;
+
+  /**
+   * Where to fetch the verifiable receipt for each finished run.
+   *
+   * A receipt is the one artefact in this project that reaches the developer's
+   * own customer: the signed session root, every sealed leaf with the bytes its
+   * hash was taken over, and each leaf's proof to the root — checkable by
+   * `openbox verify` with no network access and no OpenBox.
+   *
+   * This returns the locator, not the document, and that boundary is deliberate.
+   * The receipt is assembled server-side from records sealed at session close;
+   * a receipt this SDK built for itself would prove only that the SDK can hash.
+   * Fetching it is also the caller's to do, because it needs their dashboard
+   * credentials, which this SDK does not hold — it talks to Core, not to the
+   * API that serves receipts.
+   *
+   * Resolve a locator against the OpenBox API:
+   *
+   * ```
+   * GET /routing-integrity/sessions/{session_id}/receipt
+   * ```
+   *
+   * `sessionId` is present only when one was configured on this instance; Core
+   * keys its own session row on `(workflowId, runId)`, which are always here.
+   * Read after `close()`, when every run has finalized.
+   */
+  receiptRefs(): ReadonlyArray<ReceiptRef>;
+}
+
+/**
+ * A pointer to one finished run's receipt.
+ *
+ * Ids only. It carries no claims of its own, so it can be handed to a caller,
+ * logged, or embedded in a response without becoming another thing that has to
+ * be trusted.
+ */
+export interface ReceiptRef {
+  /** Core's workflow identity for the run. */
+  workflowId: string;
+  /** Core's run identity, unique per execution. */
+  runId: string;
+  /**
+   * The session id configured on this governance instance, when one was. Absent
+   * otherwise — Core assigns the session row's own id, and this SDK never sees
+   * it, so an absent value means "resolve by workflow and run", not "no
+   * session".
+   */
+  sessionId?: string;
 }
 
 /**
@@ -439,6 +487,8 @@ export function createOpenBoxGovernance(
   const openRuns: RunState[] = [];
   /** Routing summaries of finalized runs, surfaced via `routingSummaries()`. */
   const collectedRoutingSummaries: Array<Record<string, unknown>> = [];
+  /** Receipt locators for finalized runs, surfaced via `receiptRefs()`. */
+  const collectedReceiptRefs: ReceiptRef[] = [];
   // Carries the active run through the engine and through result consumption,
   // so concurrent runs on one instance never cross-attribute their tools.
   const runScope = new AsyncLocalStorage<RunState>();
@@ -1193,6 +1243,16 @@ export function createOpenBoxGovernance(
     const summary = routingSummary(routing);
     if (summary != null) collectedRoutingSummaries.push(summary);
 
+    // Recorded for every finalized run, not only the ones that produced routing
+    // provenance. A run that was blocked before it reached a provider has no
+    // provenance and still has a receipt — the refusal is exactly what its
+    // evidence says, and omitting it would make a blocked run look unrecorded.
+    collectedReceiptRefs.push({
+      workflowId: run.turn.workflowId,
+      runId: run.turn.runId,
+      ...(mw._config.sessionId != null ? { sessionId: mw._config.sessionId } : {}),
+    });
+
     await mw
       .afterAgent(run.turn, state, error, summary)
       .catch(() => undefined);
@@ -1717,6 +1777,7 @@ export function createOpenBoxGovernance(
     callModel: governedCallModel,
     close,
     routingSummaries: () => collectedRoutingSummaries,
+    receiptRefs: () => collectedReceiptRefs,
   };
 }
 

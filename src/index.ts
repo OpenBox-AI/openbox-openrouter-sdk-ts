@@ -5,7 +5,7 @@
  * `openrouter.ts` binding that attaches the middleware to `@openrouter/agent`.
  */
 
-export { createOpenBoxGovernance, type OpenBoxGovernance } from './openrouter';
+export { createOpenBoxGovernance, type OpenBoxGovernance, type ReceiptRef } from './openrouter';
 export { OpenBoxOpenRouterMiddleware } from './middleware';
 
 export { GovernanceClient, type ApprovalPollResponse, type OnApiError } from './client';
