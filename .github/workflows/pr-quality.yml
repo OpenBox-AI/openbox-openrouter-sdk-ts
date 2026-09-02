@@ -285,11 +285,19 @@ jobs:
               # A count of new violations is not actionable; the issues are.
               pr="${{ github.event.pull_request.number }}"
               issues="$(curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
-                "${SONAR_HOST_URL}/api/issues/search?componentKeys=openbox-openrouter-sdk-ts&resolved=false${pr:+&pullRequest=${pr}}&ps=100" || true)"
+                "${SONAR_HOST_URL}/api/issues/search?projects=openbox-openrouter-sdk-ts&resolved=false&inNewCodePeriod=true${pr:+&pullRequest=${pr}}&ps=100" || true)"
               echo
               echo "[QUALITY GATE] new issues:"
-              jq -r '.issues[]? | "  \(.severity) \(.rule)\n    \(.component | sub("^[^:]*:"; "")):\(.line // 0)  \(.message)"' \
-                <<< "${issues}" || echo "  (could not list issues)"
+              if jq -e '.issues | length > 0' <<< "${issues}" > /dev/null 2>&1; then
+                jq -r '.issues[] | "  \(.severity) \(.rule)\n    \(.component | sub("^[^:]*:"; "")):\(.line // 0)  \(.message)"' \
+                  <<< "${issues}"
+              else
+                # Silence here previously read as "no issues" next to a count of
+                # nine, so say which it is.
+                echo "  none returned by the issues API — response follows:"
+                head -c 2000 <<< "${issues}"
+                echo
+              fi
             else
               echo "Could not resolve the analysis id; see the SonarQube dashboard."
             fi
