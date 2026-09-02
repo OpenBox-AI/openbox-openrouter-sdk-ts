@@ -117,6 +117,18 @@ import {
   unwrapGovernanceError,
 } from './verdict';
 
+/**
+ * What a start verdict said about where the call may be processed: nothing,
+ * a newly bound approved list, or a restatement of one already in force.
+ */
+type ResidencyResolution = 'none' | 'bound' | 'satisfied';
+
+/**
+ * What a start verdict said about where the call is routed: nothing, a
+ * directive the request already satisfies, or a redirect to re-open under.
+ */
+type RoutingResolution = 'none' | 'satisfied' | 'redirect';
+
 function asError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
 }
@@ -702,7 +714,7 @@ export function createOpenBoxGovernance(
     run: RunState,
     response: GovernanceVerdictResponse | null,
     attempt: number,
-  ): 'none' | 'bound' | 'satisfied' {
+  ): ResidencyResolution {
     const directive = readResidencyDirective(response);
     if (directive == null) return 'none';
     const narrowed = narrowResidency(run.residency, directive);
@@ -734,7 +746,7 @@ export function createOpenBoxGovernance(
     response: GovernanceVerdictResponse | null,
     ownsRequest: boolean,
     attempt: number,
-  ): 'none' | 'satisfied' | 'redirect' {
+  ): RoutingResolution {
     if (!mw._config.preflightRouting) return 'none';
     const directive = readRoutingDirective(response);
     if (directive == null) return 'none';
@@ -823,8 +835,8 @@ export function createOpenBoxGovernance(
     // recorded as blocked must not go on to execute. The corrected call is a
     // new one, evaluated fresh, and it is the one that carries the routing
     // record and the response.
-    let residency: 'none' | 'bound' | 'satisfied';
-    let routing: 'none' | 'satisfied' | 'redirect';
+    let residency: ResidencyResolution;
+    let routing: RoutingResolution;
     try {
       // Read before the routing decision, so the approved list is bound to the
       // run whether or not the same verdict also redirects the provider — the
@@ -1009,7 +1021,7 @@ export function createOpenBoxGovernance(
     run: RunState,
     activityId: string,
     startResponse: GovernanceVerdictResponse | null,
-    routing: 'none' | 'satisfied' | 'redirect',
+    routing: RoutingResolution,
     claim: Record<string, unknown>,
   ): Promise<void> {
     const why =
@@ -1066,8 +1078,8 @@ export function createOpenBoxGovernance(
     run: RunState,
     activityId: string,
     startResponse: GovernanceVerdictResponse,
-    routing: 'none' | 'satisfied' | 'redirect',
-    residency: 'none' | 'bound' | 'satisfied',
+    routing: RoutingResolution,
+    residency: ResidencyResolution,
   ): Promise<void> {
     // A directive the request already complies with has nothing left to
     // enforce: the policy is restating a constraint that is in force.
