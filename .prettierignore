@@ -1,0 +1,7 @@
+coverage
+dist
+node_modules
+demo-agent/node_modules
+demo-agent/dist
+*.tgz
+package-lock.json

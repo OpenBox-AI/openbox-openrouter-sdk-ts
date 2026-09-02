@@ -1,8 +1,9 @@
 # Demo agent — OpenRouter + OpenBox
 
 A customer-support agent on `@openrouter/agent`, governed by OpenBox. It
-consumes the SDK as a **local dependency** (`"openbox-openrouter-governance":
-"file:.."`), so it exercises the real published package surface rather than
+consumes the SDK as a **local dependency**
+(`"@openbox-ai/openbox-openrouter-governance": "file:.."`), so it exercises the
+real published package surface rather than
 reaching into `src/`.
 
 ## Setup

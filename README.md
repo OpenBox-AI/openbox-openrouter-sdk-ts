@@ -1,7 +1,7 @@
-# openbox-openrouter-governance
+# @openbox-ai/openbox-openrouter-governance
 
 [![PR Quality](https://github.com/OpenBox-AI/openbox-openrouter-sdk-ts/actions/workflows/pr-quality.yml/badge.svg)](https://github.com/OpenBox-AI/openbox-openrouter-sdk-ts/actions/workflows/pr-quality.yml)
-[![npm](https://img.shields.io/npm/v/openbox-openrouter-governance.svg)](https://www.npmjs.com/package/openbox-openrouter-governance)
+[![npm](https://img.shields.io/npm/v/@openbox-ai/openbox-openrouter-governance.svg)](https://www.npmjs.com/package/@openbox-ai/openbox-openrouter-governance)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
 Governance and observability for the [OpenRouter Agent SDK](https://openrouter.ai/docs/agent-sdk)
@@ -35,7 +35,7 @@ the session's signed root.
 ## Install
 
 ```bash
-npm install openbox-openrouter-governance @openrouter/agent
+npm install @openbox-ai/openbox-openrouter-governance @openrouter/agent
 ```
 
 Node 18.17+. `@openrouter/agent` is a peer dependency.
@@ -44,7 +44,7 @@ Node 18.17+. `@openrouter/agent` is a peer dependency.
 
 ```ts
 import { OpenRouter, callModel, tool } from '@openrouter/agent';
-import { createOpenBoxGovernance } from 'openbox-openrouter-governance';
+import { createOpenBoxGovernance } from '@openbox-ai/openbox-openrouter-governance';
 
 const client = new OpenRouter({ apiKey: process.env.OPENROUTER_API_KEY });
 

@@ -22,7 +22,7 @@ import {
   FetchTransport,
   type OpenBoxRequestOptions,
   type OpenBoxTransport,
-} from 'openbox-openrouter-governance';
+} from '@openbox-ai/openbox-openrouter-governance';
 import { Client as PgClient } from 'pg';
 
 import { ALL_TOOLS, INSTRUCTIONS, TOOL_TYPES } from './tools';

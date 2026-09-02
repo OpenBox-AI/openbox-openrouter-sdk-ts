@@ -1,6 +1,6 @@
 /**
  * Demo: a customer-support agent built on `@openrouter/agent`, governed by
- * OpenBox through `openbox-openrouter-governance` (linked as a local `file:..`
+ * OpenBox through `@openbox-ai/openbox-openrouter-governance` (linked as a local `file:..`
  * dependency, so this exercises the published package surface — not the
  * SDK's internals).
  *
@@ -18,7 +18,7 @@
 
 import { config as loadEnv } from 'dotenv';
 import { OpenRouter, callModel } from '@openrouter/agent';
-import { createOpenBoxGovernance } from 'openbox-openrouter-governance';
+import { createOpenBoxGovernance } from '@openbox-ai/openbox-openrouter-governance';
 
 loadEnv();
 
