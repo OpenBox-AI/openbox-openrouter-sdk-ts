@@ -78,16 +78,39 @@ import {
   abortActivity,
   clearActivityAbort,
   registerActivity,
+  setActivityRouting,
   runInScopeSync,
   awaitAssistantText,
   beginRoutingAttestation,
   drainRoutingAttestations,
+  evaluateActivitySpan,
   runWithActivityResolver,
   unregisterActivity,
 } from './span_processor';
-import type { RoutingProvenance } from './provenance';
-import { hexId, safeSerialize } from './types';
-import { enforceVerdict, GovernanceHaltError, unwrapGovernanceError } from './verdict';
+import { readRequestedRouting, type RequestedRouting, type RoutingProvenance } from './provenance';
+import {
+  describeResidency,
+  narrowResidency,
+  readResidencyDirective,
+  type DataResidency,
+} from './residency';
+import {
+  applyRoutingToRequest,
+  describeResolution,
+  describeRouting,
+  narrowRouting,
+  readRoutingDirective,
+  routingRecordSpans,
+  routingSpan,
+  routingTarget,
+} from './preflight_routing';
+import { hexId, safeSerialize, type GovernanceVerdictResponse } from './types';
+import {
+  enforceVerdict,
+  GovernanceBlockedError,
+  GovernanceHaltError,
+  unwrapGovernanceError,
+} from './verdict';
 
 /**
  * Minimal structural view of `@openrouter/agent`'s `Tool`. Typed structurally
@@ -153,6 +176,91 @@ interface CallModelRequestLike {
  */
 class RunState {
   readonly turn: Turn;
+  /**
+   * Routing constraint read off the caller's request object, once per run.
+   *
+   * The wire body is the better source and is preferred when available; this is
+   * the fallback for the common case where `captureRequestObjectBody` is off.
+   */
+  declaredRouting: RequestedRouting | null = null;
+  /**
+   * Routing a policy narrowed the request to, pre-flight. Set only while this
+   * SDK still owns the request object — the pre-flight turn — because that is
+   * the only point at which the constraint can still be written into what goes
+   * out. After that it is `declaredRouting` that carries the effective
+   * constraint, so later turns state the narrowed one, not the original.
+   */
+  appliedRouting: RequestedRouting | null = null;
+  /**
+   * The approved-region list this run is governed by, once a policy states one.
+   *
+   * Unlike `declaredRouting` there is no request-side counterpart to read it
+   * from: OpenRouter has no region field, so residency exists only as something
+   * the policy asserts and the generation record is later measured against. It
+   * accumulates across turns — a directive can narrow it and never widen it —
+   * so a later turn cannot quietly re-approve a region an earlier one removed.
+   */
+  residency: DataResidency | null = null;
+  /** The model the caller asked for, reported with the routing. */
+  model: string | null = null;
+  /**
+   * When this turn's routing began — the first attempt at the call, not the
+   * re-opened one. The record spans are written by the call that runs, which is
+   * after the fact, so they carry this rather than the time they were sent.
+   */
+  routingStartedAtMs = 0;
+  /** What it asked for before a policy redirected it, kept for the record. */
+  routingRedirectedFrom: RequestedRouting | null = null;
+  /**
+   * The refused attempt this call is a retry of.
+   *
+   * A routed call is a NEW activity — an activity Core recorded as blocked must
+   * not go on to execute — but it is the same model call, re-issued. Without
+   * saying so, the record reads as two unrelated calls, one of which has no
+   * receipt: five calls and four receipts for four prompts, with nothing
+   * explaining the difference.
+   */
+  retriedFrom: string | null = null;
+  /**
+   * A refusal raised while the engine was mid-call, and the promise waiting on
+   * it.
+   *
+   * A span-level block rejects the patched fetch, and the engine swallows that
+   * rejection — so the caller's `getText()` never settles and the process exits
+   * with no answer and no error. The existing verdict-wins check only runs when
+   * the engine's promise resolves, which in that case it never does. This is
+   * the signal that is RACED against the engine, so a refused call fails as a
+   * refusal rather than as silence.
+   */
+  blockedError: Error | null = null;
+  /**
+   * The finalization started for a refusal, so `close()` can wait for it.
+   *
+   * It is started without being awaited — the caller's error must not queue
+   * behind bookkeeping — which means the process can otherwise exit before the
+   * session is closed. Measured: exit 2 with the right reason printed, and the
+   * session still `pending`.
+   */
+  pendingFinalize: Promise<void> | null = null;
+  private blockedWaiters: Array<(err: Error) => void> = [];
+
+  /** Record a refusal and wake anything waiting on one. */
+  noteBlocked(err: Error): void {
+    if (this.blockedError != null) return;
+    this.blockedError = err;
+    const waiters = this.blockedWaiters;
+    this.blockedWaiters = [];
+    for (const wake of waiters) wake(err);
+  }
+
+  /** Resolves only if this run is refused. Never rejects, never settles twice. */
+  blockedSignal(): Promise<Error> {
+    if (this.blockedError != null) return Promise.resolve(this.blockedError);
+    return new Promise<Error>((resolve) => {
+      this.blockedWaiters.push(resolve);
+    });
+  }
+
   /** Activity id of the currently-open llm_call, if any. */
   llmActivityId: string | null = null;
   llmStartedAtMs = 0;
@@ -284,6 +392,68 @@ export interface OpenBoxGovernance {
    * await it — the counterpart to opening the run.
    */
   close(): Promise<void>;
+
+  /**
+   * What the routing provenance for the finished runs actually said.
+   *
+   * The same summary that rides on `WorkflowCompleted.extra` — who served each
+   * call, from which region, at what cost, and whether a stated allowlist held.
+   * Exposed because a developer who wants to show or assert on this should not
+   * have to read it back out of the dashboard.
+   *
+   * Populated as each run finalizes, so read it after `close()`. Empty when no
+   * provenance was collected (attestation off, no API key, or records that
+   * never arrived).
+   */
+  routingSummaries(): ReadonlyArray<Record<string, unknown>>;
+
+  /**
+   * Where to fetch the verifiable receipt for each finished run.
+   *
+   * A receipt is the one artefact in this project that reaches the developer's
+   * own customer: the signed session root, every sealed leaf with the bytes its
+   * hash was taken over, and each leaf's proof to the root — checkable by
+   * `openbox verify` with no network access and no OpenBox.
+   *
+   * This returns the locator, not the document, and that boundary is deliberate.
+   * The receipt is assembled server-side from records sealed at session close;
+   * a receipt this SDK built for itself would prove only that the SDK can hash.
+   * Fetching it is also the caller's to do, because it needs their dashboard
+   * credentials, which this SDK does not hold — it talks to Core, not to the
+   * API that serves receipts.
+   *
+   * Resolve a locator against the OpenBox API:
+   *
+   * ```
+   * GET /routing-integrity/sessions/{session_id}/receipt
+   * ```
+   *
+   * `sessionId` is present only when one was configured on this instance; Core
+   * keys its own session row on `(workflowId, runId)`, which are always here.
+   * Read after `close()`, when every run has finalized.
+   */
+  receiptRefs(): ReadonlyArray<ReceiptRef>;
+}
+
+/**
+ * A pointer to one finished run's receipt.
+ *
+ * Ids only. It carries no claims of its own, so it can be handed to a caller,
+ * logged, or embedded in a response without becoming another thing that has to
+ * be trusted.
+ */
+export interface ReceiptRef {
+  /** Core's workflow identity for the run. */
+  workflowId: string;
+  /** Core's run identity, unique per execution. */
+  runId: string;
+  /**
+   * The session id configured on this governance instance, when one was. Absent
+   * otherwise — Core assigns the session row's own id, and this SDK never sees
+   * it, so an absent value means "resolve by workflow and run", not "no
+   * session".
+   */
+  sessionId?: string;
 }
 
 /**
@@ -315,6 +485,10 @@ export function createOpenBoxGovernance(
   // concurrent runs push/pop, and the most recent open run wins — see
   // `currentRun()`.
   const openRuns: RunState[] = [];
+  /** Routing summaries of finalized runs, surfaced via `routingSummaries()`. */
+  const collectedRoutingSummaries: Array<Record<string, unknown>> = [];
+  /** Receipt locators for finalized runs, surfaced via `receiptRefs()`. */
+  const collectedReceiptRefs: ReceiptRef[] = [];
   // Carries the active run through the engine and through result consumption,
   // so concurrent runs on one instance never cross-attribute their tools.
   const runScope = new AsyncLocalStorage<RunState>();
@@ -354,11 +528,265 @@ export function createOpenBoxGovernance(
   // ── LLM activity lifecycle ────────────────────────────────────────────────
 
   /**
+   * The routing step: its own activity, between the call that was refused and
+   * the call that runs.
+   *
+   * It is an activity rather than a pair of spans on the model call because it
+   * is a different thing from the model call — the SDK deciding where a prompt
+   * may go, on the policy's instruction. Under it sit the two halves of the
+   * routing itself, naming the provider and model the prompt is being routed
+   * to. Allowed, because it is what happens: nothing here is in question by the
+   * time it is written.
+   *
+   * The spans go through the hook path because that is the only one Core
+   * persists, which means registering the activity for the length of it.
+   */
+  async function routeModelCall(
+    run: RunState,
+    routing: RequestedRouting,
+    reason: string | null,
+    startedAtMs: number,
+  ): Promise<void> {
+    const activityId = hexId(32);
+    const target = routingTarget(run.model, routing);
+
+    const started = await evaluate(
+      mw,
+      buildEvent(mw, run.turn, 'ActivityStarted', activityId, 'llm_routing', {
+        activity_input: [
+          {
+            model: run.model,
+            provider_only: routing.only ?? null,
+            allow_fallbacks: routing.allowFallbacks ?? null,
+            // Where it may be PROCESSED, alongside who may serve it. On a
+            // residency-only directive this is the only field that changed,
+            // and without it the step reads as a re-route that re-routed
+            // nothing.
+            approved_regions: run.residency?.regions ?? null,
+            require_own_key: run.residency?.requireOwnKey ?? null,
+            redirected_by_policy: reason,
+          },
+        ],
+      }),
+    );
+
+    if (started != null) {
+      try {
+        const result = enforceVerdict(started, 'llm_routing');
+        if (result.requiresHitl) {
+          await pollApprovalOrHalt(mw, run.turn, activityId, 'llm_routing', result.approvalId);
+          clearActivityAbort(activityId);
+        }
+      } catch (err) {
+        noteHalt(run, err);
+        await sendOrphanClosure(mw, run.turn, 'ActivityCompleted', activityId, 'llm_routing', err);
+        throw err;
+      }
+    }
+
+    registerActivity(
+      activityId,
+      {
+        ...baseEventFields(mw, run.turn),
+        event_type: 'ActivityStarted',
+        activity_id: activityId,
+        activity_type: 'llm_routing',
+      },
+      mw._client.transport,
+      run.turn.workflowId,
+      {
+        hitl: mw._config.hitl,
+        onApiError: mw._config.onApiError,
+        logger: mw._config.logger,
+        requestTimeoutMs: mw._config.governanceTimeout * 1000,
+      },
+    );
+
+    const [routedStart, routedEnd] = routingRecordSpans(
+      activityId,
+      run.model,
+      run.routingRedirectedFrom,
+      routing,
+      reason,
+      { startMs: startedAtMs, endMs: Date.now() },
+      run.residency,
+    );
+    for (const span of [routedStart, routedEnd]) {
+      await evaluateActivitySpan(activityId, span).catch(() => undefined);
+    }
+    await unregisterActivity(activityId);
+
+    await evaluate(
+      mw,
+      buildEvent(mw, run.turn, 'ActivityCompleted', activityId, 'llm_routing', {
+        status: 'completed',
+        duration_ms: Date.now() - startedAtMs,
+        activity_output: safeSerialize({ result: describeResolution(routing, reason) }),
+      }),
+    ).catch(() => undefined);
+
+    const why = reason != null ? ` — ${reason}` : '';
+    mw._config.logger.warn(`${target}${why}`);
+  }
+
+  /**
+   * How many times one turn's model call may be re-opened after a redirect.
+   *
+   * A redirect narrows the request and the re-opened call states the narrowed
+   * constraint, so a policy that was asking for exactly that stops firing and
+   * one re-open is always enough. This is a backstop against a policy that keeps
+   * demanding a change it has already been given, not a retry budget.
+   */
+  const MAX_ROUTING_ATTEMPTS = 2;
+
+  /**
+   * What a model call's verdict says about its routing.
+   *
+   * A policy that wants a prompt routed elsewhere has to say so on a **block**
+   * carrying `patch.new_input` — that is the only arm and key Core forwards a
+   * directive on (`constrain`, `allow` and `monitor` all arrive with it
+   * stripped; measured, not assumed). So the block lands on the model call as
+   * originally routed, which is the thing that was actually refused, and this
+   * decides what that means:
+   *
+   *   - `none` — the verdict says nothing about routing. Enforce it as-is.
+   *   - `satisfied` — a directive the request already complies with. The policy
+   *     is restating a constraint that is in force, so there is nothing to
+   *     refuse; the block is enforced as an allow.
+   *   - `redirect` — apply it, and let the call proceed to where it may go. The
+   *     model call keeps the refusal on its start, because the call as routed
+   *     genuinely was refused; the routing that fixed it is reported inside the
+   *     same activity, between its start and its completion, so the row reads
+   *     "refused as routed → routed here instead → done".
+   *
+   * It throws instead when the directive cannot be honoured: when it and the
+   * request have no provider in common, and when the request belongs to the
+   * engine rather than to us (turn two onwards), where a constraint that cannot
+   * be applied must be refused rather than appear to have been applied.
+   */
+  /**
+   * Take the residency constraint off a verdict, if it carries one.
+   *
+   * Deliberately does not affect control flow. There is no request field that
+   * decides where a call is processed, so a residency directive cannot be
+   * applied to the outgoing request the way a provider allowlist can — and
+   * pretending otherwise, by refusing the call as though the constraint had
+   * been enforced, would claim prevention where there is only evidence. What it
+   * does instead is bind the approved list to this run before the prompt goes
+   * out, so it is stamped on the routing span, sealed under the session's
+   * signed root, and compared to the region OpenRouter reports afterwards.
+   *
+   * A directive that narrows to nothing is kept as the empty list rather than
+   * discarded: "no region is approved" then fails every subsequent check
+   * loudly, which is the correct reading of two policies that agree on nowhere.
+   *
+   * What it returns matters for the verdict, though. Core forwards a directive
+   * only on a refusing arm, so "these are the approved regions" necessarily
+   * arrives as a BLOCK — and a block nobody disarms kills the run. That is what
+   * happened when this returned nothing: the policy stated an approved list,
+   * the SDK recorded it, and the prompt was then refused for a constraint it
+   * now satisfied. `bound` and `satisfied` both mean the run complies, and the
+   * caller downgrades the block to allow on either, exactly as it does for a
+   * routing directive the request already met.
+   */
+  function resolveResidency(
+    run: RunState,
+    response: GovernanceVerdictResponse | null,
+    attempt: number,
+  ): 'none' | 'bound' | 'satisfied' {
+    const directive = readResidencyDirective(response);
+    if (directive == null) return 'none';
+    const narrowed = narrowResidency(run.residency, directive);
+    if (!narrowed.changed) return 'satisfied';
+    // A policy that binds a new list on every attempt is narrowing forever.
+    // Each narrowing does shrink a finite set, so it would terminate — but not
+    // before filling the session with refused attempts, and a governance layer
+    // looping on its own corrections is the failure this cap exists for.
+    if (attempt >= MAX_ROUTING_ATTEMPTS) {
+      throw new GovernanceBlockedError(
+        'block',
+        `OpenBox governance block at llm_start: ${response?.reason ?? 'data residency set by policy'} — ` +
+          `the policy narrowed data residency to ${describeResidency(narrowed.residency)} again after ` +
+          `the call had already been re-opened under it; refusing rather than re-opening indefinitely`,
+      );
+    }
+    run.residency = narrowed.residency;
+    mw._config.logger.warn(
+      `policy set data residency for this run to ${describeResidency(narrowed.residency)}` +
+        (narrowed.satisfiable
+          ? ''
+          : ' — which leaves no approved region, so every call will be recorded as unapproved'),
+    );
+    return 'bound';
+  }
+
+  function resolveRouting(
+    run: RunState,
+    response: GovernanceVerdictResponse | null,
+    ownsRequest: boolean,
+    attempt: number,
+  ): 'none' | 'satisfied' | 'redirect' {
+    if (!mw._config.preflightRouting) return 'none';
+    const directive = readRoutingDirective(response);
+    if (directive == null) return 'none';
+
+    const reason = response?.reason ?? 'routing refused by policy';
+    const narrowed = narrowRouting(run.declaredRouting, directive);
+    const refuse = (message: string): never => {
+      throw new GovernanceBlockedError('block', message);
+    };
+
+    if (!narrowed.satisfiable) {
+      refuse(
+        `OpenBox governance block at llm_routing: ${reason} — the policy's routing ` +
+          `(${describeRouting(directive)}) and the request's ` +
+          `(${describeRouting(run.declaredRouting ?? {})}) have no provider in common, so the ` +
+          `prompt was not sent`,
+      );
+    }
+
+    if (!narrowed.changed) return 'satisfied';
+
+    if (!ownsRequest) {
+      refuse(
+        `OpenBox governance block at llm_routing: ${reason} — this turn's request is held by the ` +
+          `engine, so ${describeRouting(narrowed.routing)} cannot be applied to it; refusing the ` +
+          `call rather than sending it routed as it was`,
+      );
+    }
+
+    if (attempt >= MAX_ROUTING_ATTEMPTS) {
+      refuse(
+        `OpenBox governance block at llm_routing: ${reason} — the policy asked for ` +
+          `${describeRouting(narrowed.routing)} again after the call was already routed there; ` +
+          `refusing rather than re-routing the same call indefinitely`,
+      );
+    }
+
+    run.appliedRouting = narrowed.routing;
+    run.routingRedirectedFrom = run.declaredRouting;
+    // What the call states from here on is the constraint actually in force,
+    // not the one the caller wrote — otherwise it reports the original and the
+    // same policy fires again on a request that already complies.
+    run.declaredRouting = narrowed.routing;
+    mw._config.logger.warn(
+      `policy routed this call to ${describeRouting(narrowed.routing)}` +
+        (narrowed.removed.length > 0 ? ` (removed ${narrowed.removed.join(', ')})` : '') +
+        ` — ${reason}`,
+    );
+    return 'redirect';
+  }
+
+  /**
    * Open the llm_call activity and enforce its verdict — the first half of
    * `handleWrapModelCall`. Throws on block/halt (closing the orphaned row
    * first) and polls on require_approval.
    */
-  async function openLlmActivity(run: RunState, messages?: unknown[]): Promise<void> {
+  async function openLlmActivity(
+    run: RunState,
+    messages?: unknown[],
+    attempt = 1,
+  ): Promise<void> {
     if (run.llmActivityId != null) return; // already open for this turn
 
     // The run is already halted. Do not open another activity and do not ask
@@ -377,8 +805,42 @@ export function createOpenBoxGovernance(
     const activityId = hexId(32);
     run.llmActivityId = activityId;
     run.llmStartedAtMs = Date.now();
+    // The routing clock starts with the first attempt, not with the re-opened
+    // one: the routing began when the call was first asked for.
+    if (attempt === 1) run.routingStartedAtMs = run.llmStartedAtMs;
 
     if (!mw._config.sendLlmStartEvent) return;
+
+    // The claim a policy decides this call on, built once: it is sent with the
+    // call, and again with its closure if the call is refused.
+    const routingClaimSpan = mw._config.preflightRouting
+      ? routingSpan(activityId, 'started', run.model, run.declaredRouting, undefined, undefined, run.residency)
+      : null;
+    // A retry names the attempt it replaces. Read together, the refused
+    // activity and this one are one model call: attempt 1 never sent, attempt 2
+    // served — which is why only one of them carries a receipt.
+    let retryMetadata: Record<string, unknown> | null = null;
+    if (run.retriedFrom != null) {
+      if (routingClaimSpan != null) {
+        const attrs = routingClaimSpan.attributes as Record<string, unknown>;
+        attrs['openbox.routing.attempt'] = attempt;
+        attrs['openbox.routing.retried_from'] = run.retriedFrom;
+      }
+      // Also on the event, because the claim span travels for evaluation and is
+      // not persisted — so without this the link exists only for the policy,
+      // and a reader still sees two unrelated calls, one without a receipt.
+      retryMetadata = {
+        routing_attempt: attempt,
+        retried_from_activity_id: run.retriedFrom,
+      };
+      run.retriedFrom = null;
+    }
+    // A refused call must close on the same claim it was refused on, or its
+    // completion is evaluated against nothing and the record reads BLOCK …
+    // ALLOW for one activity in which nothing changed.
+    const claim = routingClaimSpan != null
+      ? { spans: [routingClaimSpan], span_count: 1 }
+      : {};
 
     // Only the pre-flight turn has nothing but the prompt behind it.
     const isFirstTurn = run.transcript.length <= 1;
@@ -393,6 +855,12 @@ export function createOpenBoxGovernance(
           ? [{ prompt: run.promptText }]
           : run.transcript.map((m) => ({ ...m })),
         prompt: isFirstTurn ? run.promptText : renderTranscript(run.transcript),
+        // Where this call is routed, stated on the call itself — so a policy
+        // that refuses it is refusing this model call as routed, which is what
+        // actually happened. On a redirect the SDK re-opens the call under the
+        // corrected routing and this span restates it (see `resolveRouting`).
+        ...(routingClaimSpan != null ? { spans: [routingClaimSpan], span_count: 1 } : {}),
+        ...(retryMetadata != null ? { metadata: retryMetadata } : {}),
       }),
     );
 
@@ -420,9 +888,112 @@ export function createOpenBoxGovernance(
       }
     }
 
+    // Does this verdict say anything about where the call is routed?
+    //
+    // A block carrying a routing directive refused this call AS ROUTED. So this
+    // attempt is closed and never runs — which is what a block means, and the
+    // reason the redirect cannot simply be applied in place: an activity Core
+    // recorded as blocked must not go on to execute. The corrected call is a
+    // new one, evaluated fresh, and it is the one that carries the routing
+    // record and the response.
+    let residency: 'none' | 'bound' | 'satisfied';
+    let routing: 'none' | 'satisfied' | 'redirect';
+    try {
+      // Read before the routing decision, so the approved list is bound to the
+      // run whether or not the same verdict also redirects the provider — the
+      // two arrive on one directive but are not conditional on each other.
+      residency = resolveResidency(run, startResponse, attempt);
+      routing = resolveRouting(run, startResponse, messages != null, attempt);
+    } catch (err) {
+      noteHalt(run, err);
+      if (mw._config.sendLlmEndEvent) {
+        await sendOrphanClosure(mw, run.turn, 'LLMCompleted', activityId, 'llm_call', err, claim);
+      }
+      run.llmActivityId = null;
+      throw err;
+    }
+
+    // A newly bound residency re-opens the call for the SAME reason a routing
+    // redirect does, and skipping that was a real hole: Core had recorded this
+    // activity as BLOCK, and the call then went out under it — a row whose
+    // start says the prompt was refused, sitting above the 200 that served it.
+    // Downgrading the verdict in-process does not unsay what Core wrote down;
+    // the only honest shape is to close this attempt as refused and evaluate a
+    // new one that carries the approved list.
+    //
+    // `satisfied` is not this case: there the constraint was already in force,
+    // so the policy is restating something this attempt already complies with
+    // and there is nothing to re-open.
+    const reopen = routing === 'redirect' || residency === 'bound';
+    if (reopen) {
+      const why =
+        startResponse?.reason ??
+        (routing === 'redirect' ? 'routing refused by policy' : 'data residency set by policy');
+      // What happened instead — named for whichever half of the directive
+      // actually changed, so the refused row explains its own successor.
+      const instead =
+        routing === 'redirect'
+          ? `${routingTarget(run.model, run.appliedRouting)} and retried`
+          : `re-opened under ${describeResidency(run.residency)} and retried`;
+
+      // Close the refused attempt with the SAME claim it was refused on, so the
+      // policy sees the same facts and its completion records the same verdict.
+      // An activity whose start says BLOCK and whose completion says ALLOW is a
+      // record that contradicts itself: nothing about the call changed between
+      // the two, so nothing about the verdict should either.
+      if (mw._config.sendLlmEndEvent) {
+        await evaluate(
+          mw,
+          buildEvent(mw, run.turn, 'LLMCompleted', activityId, 'llm_call', {
+            status: 'failed',
+            error: toErrorInfo(new GovernanceBlockedError('block', why)),
+            // Why it was refused, and what happened next — read together, the
+            // two say the whole thing: this call was not sent, and the prompt
+            // went out under the constraint the policy named instead.
+            activity_output: safeSerialize({
+              result: `blocked: ${why} — nothing was sent; ${instead}`,
+            }),
+            ...claim,
+          }),
+        ).catch(() => undefined);
+      }
+      run.llmActivityId = null;
+      // The next attempt states what it is a retry of, so the pair reconciles.
+      run.retriedFrom = activityId;
+
+      // Where it may go, and where it may be processed, as its own step. On a
+      // residency-only directive nothing about the provider changed, so the
+      // routing in force is what the call already declared — the step is
+      // recording the residency, not a re-route.
+      await routeModelCall(
+        run,
+        run.appliedRouting ?? run.declaredRouting ?? {},
+        why,
+        run.routingStartedAtMs,
+      );
+
+      // …and the call again, under both constraints.
+      return openLlmActivity(run, messages, attempt + 1);
+    }
+
     if (startResponse != null) {
       try {
-        const result = enforceVerdict(startResponse, 'llm_start');
+        const result = enforceVerdict(
+          // A directive the request already complies with has nothing left to
+          // enforce: the policy is restating a constraint that is in force.
+          //
+          // A residency directive counts here too, and it is the ONLY way one
+          // can be honoured at all: it arrives on a block because that is the
+          // only arm Core forwards a patch on, and there is no request field to
+          // apply it to, so the run complies by carrying the approved list —
+          // which it now does. `routing === 'none'` guards it: a block that
+          // also states an unmet provider constraint is a real refusal, and
+          // that half is decided above, not disarmed here.
+          routing === 'satisfied' || (routing === 'none' && residency !== 'none')
+            ? { ...startResponse, arm: 'allow', verdict: 'allow', action: 'allow' }
+            : startResponse,
+          'llm_start',
+        );
         if (result.requiresHitl) {
           await pollApprovalOrHalt(mw, run.turn, activityId, 'llm_call', result.approvalId);
           clearActivityAbort(activityId);
@@ -430,12 +1001,18 @@ export function createOpenBoxGovernance(
       } catch (err) {
         noteHalt(run, err);
         if (mw._config.sendLlmEndEvent) {
-          await sendOrphanClosure(mw, run.turn, 'LLMCompleted', activityId, 'llm_call', err);
+          await sendOrphanClosure(mw, run.turn, 'LLMCompleted', activityId, 'llm_call', err, claim);
         }
         run.llmActivityId = null;
         throw err;
       }
     }
+
+    // What this call is constrained to, stamped onto its spans so a routing
+    // policy can permit the call it just corrected instead of refusing it
+    // again — the policy is asked about this activity and about the HTTP
+    // request inside it, and only the activity carried the facts before.
+    setActivityRouting(activityId, run.declaredRouting, run.model, run.residency);
 
     // Layer 2: register so the actual HTTPS call to OpenRouter is captured as
     // an http_request span under this activity (and can be aborted mid-flight
@@ -455,8 +1032,27 @@ export function createOpenBoxGovernance(
         onApiError: mw._config.onApiError,
         logger: mw._config.logger,
         requestTimeoutMs: mw._config.governanceTimeout * 1000,
+        // A span-level refusal of THIS call must reach the caller. The refusal
+        // rejects the patched fetch and the engine swallows that rejection, so
+        // without this signal the run stops with no answer and no error.
+        onBlocked: (err) => {
+          run.noteBlocked(err);
+          // Close the run as failed, carrying the reason — nothing else will:
+          // the engine emits no SessionEnd for a call it never completed, so
+          // the session would sit at `pending` with no record of why it
+          // stopped.
+          //
+          // Deliberately NOT awaited, and deliberately not routed through
+          // `maybeFinalize`. Making the caller's error wait on finalization is
+          // what broke this the first time: the refusal reached the consumption
+          // handler, `release()` then called finalizeRun, that never settled,
+          // and the rethrow never happened — the same silent exit, one layer
+          // further in. The caller learns first; the bookkeeping follows.
+          run.pendingFinalize = finalizeRun(run, err).catch(() => undefined);
+        },
       },
     );
+
   }
 
   /**
@@ -476,7 +1072,15 @@ export function createOpenBoxGovernance(
     // Awaited BEFORE unregisterActivity, which drops whatever is left over.
     // This is a wait, not a read: the span carrying the text completes just
     // after `PostModelCall` fires (see `awaitAssistantText`).
-    const assistantText = await awaitAssistantText(activityId);
+    //
+    // Skipped for a refused call, which has no answer to wait for. The wait is
+    // capped at 2s on an UNREF'd timer, so a process with nothing else pending
+    // exits before it fires — and this close never reached its `WorkflowFailed`.
+    // Measured: exit 2 with the right reason printed and the session still
+    // `pending`, because the record was still queued behind a wait for text
+    // that was never coming.
+    const assistantText =
+      run.blockedError != null ? null : await awaitAssistantText(activityId);
     if (assistantText != null) recordTranscript(run, 'assistant', assistantText);
 
     // Which provider actually served this call. Started here — while the
@@ -484,7 +1088,7 @@ export function createOpenBoxGovernance(
     // awaited: OpenRouter writes the generation record a moment after the
     // response, and no turn should wait on evidence nobody is blocked on. The
     // run drains it before closing (see finalizeRun).
-    beginRoutingAttestation(activityId);
+    beginRoutingAttestation(activityId, run.declaredRouting, run.model, run.residency);
 
     await unregisterActivity(activityId);
 
@@ -515,6 +1119,29 @@ export function createOpenBoxGovernance(
         ...(meta.completion ?? assistantText) != null
           ? { activity_output: safeSerialize({ result: meta.completion ?? assistantText }) }
           : {},
+        // The routing this call ran under, restated on its closure.
+        //
+        // A completion is evaluated by the policy like anything else, and a
+        // routing rule permits a call by seeing the constraint already in
+        // force. Without the claim here, the closure of a correctly routed
+        // call is judged on nothing and refused — measured: ActivityStarted
+        // allow, ActivityCompleted block, for one call in which nothing
+        // changed. The refusal path already restates its claim for exactly
+        // this reason; the success path has to as well.
+        ...(mw._config.preflightRouting && run.declaredRouting != null
+          ? (() => {
+              const claim = routingSpan(
+                activityId,
+                'started',
+                run.model,
+                run.declaredRouting,
+                undefined,
+                undefined,
+                run.residency,
+              );
+              return { spans: [claim], span_count: 1 };
+            })()
+          : {}),
       }),
     );
 
@@ -570,8 +1197,11 @@ export function createOpenBoxGovernance(
   async function finalizeRun(run: RunState, failedWith?: unknown): Promise<void> {
     if (run.closed) return;
     run.closed = true;
-    // A halted run is a failed run, whichever path got here first.
-    failedWith = failedWith ?? run.haltError ?? undefined;
+    // A halted run is a failed run, whichever path got here first — and so is
+    // a refused one. Core marks a session halted itself on a halt verdict, but
+    // nothing marks it on a block, so without this the run that was refused
+    // sits at `pending` forever and the record never says why it stopped.
+    failedWith = failedWith ?? run.haltError ?? run.blockedError ?? undefined;
     // The abort id is never registered, so nothing else would clean it up.
     if (run.abortActivityId != null) {
       clearActivityAbort(run.abortActivityId);
@@ -609,8 +1239,21 @@ export function createOpenBoxGovernance(
       messages: run.finalText != null ? [{ role: 'assistant', content: run.finalText }] : [],
     };
 
+    const summary = routingSummary(routing);
+    if (summary != null) collectedRoutingSummaries.push(summary);
+
+    // Recorded for every finalized run, not only the ones that produced routing
+    // provenance. A run that was blocked before it reached a provider has no
+    // provenance and still has a receipt — the refusal is exactly what its
+    // evidence says, and omitting it would make a blocked run look unrecorded.
+    collectedReceiptRefs.push({
+      workflowId: run.turn.workflowId,
+      runId: run.turn.runId,
+      ...(mw._config.sessionId != null ? { sessionId: mw._config.sessionId } : {}),
+    });
+
     await mw
-      .afterAgent(run.turn, state, error, routingSummary(routing))
+      .afterAgent(run.turn, state, error, summary)
       .catch(() => undefined);
   }
 
@@ -1000,6 +1643,9 @@ export function createOpenBoxGovernance(
     // back to `fn` is re-narrowed to the caller's own `TRequest`.
     const request = rawRequest as unknown as CallModelRequestLike;
     const messages = normalizeInput(request.input);
+    // Read once here: `provider.only` lives on the object the caller passed,
+    // and reading it needs neither a body capture nor a Request clone.
+    const declaredRouting = readRequestedRouting(request);
     const state = { messages };
 
     // WorkflowStarted + SignalReceived, enforced. Throws on block/halt.
@@ -1019,6 +1665,8 @@ export function createOpenBoxGovernance(
     }
 
     const run = new RunState(turn, extractPromptText(state.messages), wrappedToolNames);
+    run.declaredRouting = declaredRouting;
+    run.model = typeof request.model === 'string' ? request.model : null;
     openRuns.push(run);
 
     try {
@@ -1030,6 +1678,13 @@ export function createOpenBoxGovernance(
       // caller used, so the redaction actually reaches the provider rather
       // than only being reflected in telemetry.
       const governedInput = denormalizeInput(request.input, state.messages);
+      // Same idea for a routing constraint the routing step narrowed: a
+      // directive reflected only in telemetry is not enforcement. This is the
+      // last point at which the request is still ours to write.
+      const routedRequest =
+        run.appliedRouting != null
+          ? applyRoutingToRequest(request, run.appliedRouting)
+          : request;
       const hooks = mergeHooks(request.hooks, buildHooks(run));
 
       // Run the engine inside an activity scope so the HTTP call it makes to
@@ -1040,15 +1695,27 @@ export function createOpenBoxGovernance(
       // while it is set: it exists precisely so the engine's next request
       // lands in a scope that refuses it.
       const scope = () => run.abortActivityId ?? run.llmActivityId ?? undefined;
-      const result = await runScope.run(run, async () =>
-        runWithActivityResolver(scope, async () =>
-          fn(
-            client,
-            { ...request, input: governedInput, hooks } as unknown as TRequest,
-            callOptions,
+      // Raced against a refusal, because the engine call itself may never
+      // settle. A span-level block rejects the patched fetch and the engine
+      // swallows that rejection — measured: `fn` pending forever, the process
+      // exiting 0 with no answer, no error, and the session left `pending`.
+      // Whether the engine propagates the rejection depends on where in its
+      // pipeline the call was refused, so it cannot be relied on either way.
+      // The consumption path is raced too, for a refusal that lands later.
+      const result = await Promise.race([
+        runScope.run(run, async () =>
+          runWithActivityResolver(scope, async () =>
+            fn(
+              client,
+              { ...routedRequest, input: governedInput, hooks } as unknown as TRequest,
+              callOptions,
+            ),
           ),
         ),
-      );
+        run.blockedSignal().then((err): never => {
+          throw err;
+        }),
+      ]);
       return scopeResultConsumption(result, scope, runScope, run, {
         begin: () => {
           run.consumptionsInFlight++;
@@ -1058,7 +1725,10 @@ export function createOpenBoxGovernance(
           if (finalText != null) run.finalText = finalText;
           await maybeFinalize(run);
         },
-        halted: () => run.haltError,
+        halted: () => run.haltError ?? run.blockedError,
+        // Resolves only if this run is refused, so a consumption that would
+        // otherwise wait forever on a swallowed rejection ends as a refusal.
+        refused: () => run.blockedSignal(),
       });
     } catch (err) {
       run.closed = true;
@@ -1085,15 +1755,29 @@ export function createOpenBoxGovernance(
 
   async function close(): Promise<void> {
     // Backstop for a run that was never consumed (so no SessionEnd ever fired)
-    // or was abandoned mid-read. A run that already finalized is skipped.
+    // or was abandoned mid-read. A run that already finalized is skipped —
+    // except a refused one, whose finalization was started but not awaited so
+    // the refusal could reach the caller first. Skipping it there is what left
+    // the session `pending` while the terminal printed the right reason.
     for (const run of openRuns) {
+      if (run.pendingFinalize != null) {
+        await run.pendingFinalize;
+        continue;
+      }
       if (run.closed) continue;
       await finalizeRun(run, new Error('Governance closed before the run finished'));
     }
     openRuns.length = 0;
   }
 
-  return { middleware: mw, tools, callModel: governedCallModel, close };
+  return {
+    middleware: mw,
+    tools,
+    callModel: governedCallModel,
+    close,
+    routingSummaries: () => collectedRoutingSummaries,
+    receiptRefs: () => collectedReceiptRefs,
+  };
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -1143,15 +1827,72 @@ function routingSummary(records: RoutingProvenance[]): Record<string, unknown> |
   const regions = [...new Set(records.map((r) => r.dataRegion).filter((d): d is string => d != null))];
   const costs = records.map((r) => r.totalCost).filter((c): c is number => c != null);
   const checked = records.filter((r) => r.honored != null);
+  // The constraint that was actually in force — which is not necessarily the
+  // one the caller wrote, since the routing step may have narrowed it. A
+  // summary that reported only "honored: true" would leave the reader unable to
+  // tell what was honored.
+  const requested = [
+    ...new Set(records.flatMap((r) => r.requested?.only ?? [])),
+  ];
   const fallbacks = records.reduce((n, r) => n + r.attempts.length, 0);
+  // "Did I get the model I paid for?" — the models actually run, and whether
+  // every checkable call ran the one it asked for.
+  const modelsServed = [
+    ...new Set(records.map((r) => r.model).filter((m): m is string => m != null)),
+  ];
+  const modelChecked = records.filter((r) => r.modelHonored != null);
+  // "Where was the data processed?" — the regions the calls actually ran in,
+  // the list the policy approved, and whether every checkable call stayed
+  // inside it. Coverage is reported rather than assumed: a call whose region
+  // OpenRouter never reported is counted as unchecked, not as approved, so
+  // `regions_checked` below is what the honored figure is honest about.
+  const approvedRegions = [
+    ...new Set(records.flatMap((r) => r.residency?.regions ?? [])),
+  ];
+  const regionChecked = records.filter((r) => r.regionHonored != null);
+  const unapproved = [
+    ...new Set(
+      regionChecked
+        .filter((r) => r.regionHonored === false)
+        .map((r) => r.dataRegion)
+        .filter((d): d is string => d != null),
+    ),
+  ];
+  const ownKeyChecked = records.filter((r) => r.ownKeyHonored != null);
+  const byokCalls = records.filter((r) => r.isByok === true).length;
+  const substituted = [
+    ...new Set(
+      modelChecked
+        .filter((r) => r.modelHonored === false)
+        .map((r) => `${r.requestedModel} → ${r.model}`),
+    ),
+  ];
 
   return {
     model_calls: records.length,
     upstream_providers: providers,
     data_regions: regions,
     ...(costs.length > 0 ? { total_cost: costs.reduce((a, b) => a + b, 0) } : {}),
+    ...(requested.length > 0 ? { routing_requested_only: requested } : {}),
     ...(checked.length > 0 ? { routing_honored: checked.every((r) => r.honored === true) } : {}),
     ...(fallbacks > 0 ? { fallback_attempts: fallbacks } : {}),
+    ...(modelsServed.length > 0 ? { models_served: modelsServed } : {}),
+    ...(modelChecked.length > 0
+      ? { model_honored: modelChecked.every((r) => r.modelHonored === true) }
+      : {}),
+    ...(substituted.length > 0 ? { model_substitutions: substituted } : {}),
+    ...(approvedRegions.length > 0 ? { approved_regions: approvedRegions } : {}),
+    ...(regionChecked.length > 0
+      ? {
+          regions_checked: regionChecked.length,
+          residency_honored: regionChecked.every((r) => r.regionHonored === true),
+        }
+      : {}),
+    ...(unapproved.length > 0 ? { unapproved_regions: unapproved } : {}),
+    ...(byokCalls > 0 ? { own_key_calls: byokCalls } : {}),
+    ...(ownKeyChecked.length > 0
+      ? { own_key_honored: ownKeyChecked.every((r) => r.ownKeyHonored === true) }
+      : {}),
     generation_ids: records.map((r) => r.generationId),
   };
 }
@@ -1294,6 +2035,17 @@ interface ConsumptionTracker {
    * carried on to produce an answer the caller must never receive.
    */
   halted(): Error | null;
+  /**
+   * Resolves only if the run is refused mid-call.
+   *
+   * `halted()` covers a verdict that arrives before the engine settles. This
+   * covers the case where the engine NEVER settles: a span-level block rejects
+   * the patched fetch, the engine swallows that rejection, and the promise the
+   * caller awaits would hang forever. Measured: a blocked model call exited 0
+   * with no answer, no error and the session left `pending`. Raced against the
+   * engine so the refusal wins over the silence.
+   */
+  refused?(): Promise<Error>;
 }
 
 /**
@@ -1358,7 +2110,17 @@ function scopeResultConsumption<T, R>(
         }
 
         if (isThenable(out)) {
-          return (out as Promise<unknown>).then(
+          const refusal = track.refused?.();
+          const settlingFirst =
+            refusal != null
+              ? Promise.race([
+                  out as Promise<unknown>,
+                  refusal.then((err) => {
+                    throw err;
+                  }),
+                ])
+              : (out as Promise<unknown>);
+          return settlingFirst.then(
             async (v) => {
               // The engine can resolve normally after a halt it swallowed, so
               // the verdict has to win here rather than the model's answer.

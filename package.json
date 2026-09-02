@@ -1,6 +1,6 @@
 {
   "name": "@openbox-ai/openbox-openrouter-governance",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenBox governance and observability for the OpenRouter Agent SDK (@openrouter/agent): policy enforcement, human-in-the-loop approvals, and HTTP/database tracing for agent runs.",
   "license": "Apache-2.0",
   "type": "commonjs",

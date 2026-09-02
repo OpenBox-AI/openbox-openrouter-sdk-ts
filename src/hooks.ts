@@ -7,7 +7,7 @@
  */
 
 import type { OpenBoxOpenRouterMiddleware } from './middleware';
-import { GovernanceVerdictResponse, OpenBoxGovernanceEvent, rfc3339Now } from './types';
+import { GovernanceVerdictResponse, OpenBoxGovernanceEvent, rfc3339Now, safeSerialize } from './types';
 import { releaseSequencer, sequencerFor } from './event-sequence';
 import { GovernanceBlockedError } from './verdict';
 import { toErrorInfo } from './error-info';
@@ -127,11 +127,25 @@ export async function sendOrphanClosure(
   activityId: string,
   activityType: string,
   err: unknown,
+  /**
+   * Anything the closure must carry so a policy sees the same facts it saw when
+   * it refused the start. Without it, an activity refused at its start closes
+   * on a fresh evaluation that has nothing to object to — and the record reads
+   * BLOCK … ALLOW for one activity, in which nothing changed between the two.
+   */
+  extra: Partial<OpenBoxGovernanceEvent> = {},
 ): Promise<void> {
+  const info = toErrorInfo(err);
   try {
     await evaluate(mw, buildEvent(mw, turn, completedEventType, activityId, activityType, {
       status: 'failed',
-      error: toErrorInfo(err),
+      error: info,
+      // Why this row failed, in the field the dashboard actually shows.
+      // `error` is structured and lands in its own column; `activity_output` is
+      // what Core copies into `output` for every event type, and a row that
+      // says only "failed" leaves the reader to go looking for the reason.
+      activity_output: safeSerialize({ result: info.message }),
+      ...extra,
     }));
   } catch {
     // non-fatal — closure telemetry must not mask the original error

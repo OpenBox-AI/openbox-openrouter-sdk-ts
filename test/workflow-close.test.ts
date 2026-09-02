@@ -23,7 +23,11 @@ class RecordingTransport implements OpenBoxTransport {
     return { arm: 'allow' } as never;
   }
   completed(): OpenBoxGovernanceEvent | undefined {
-    return this.events.find((e) => e.event_type === 'WorkflowCompleted');
+    // Either closing event: a run that ended in an error closes as
+    // WorkflowFailed, which is what Core turns into `sessions.status = failed`.
+    return this.events.find(
+      (e) => e.event_type === 'WorkflowCompleted' || e.event_type === 'WorkflowFailed',
+    );
   }
 }
 
@@ -136,6 +140,7 @@ describe('WorkflowCompleted output', () => {
     await openbox.close();
     const completed = transport.completed();
     expect(completed).toBeDefined();
+    expect(completed?.event_type).toBe('WorkflowFailed');
     expect(completed?.status).toBe('failed');
   });
 });

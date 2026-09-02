@@ -137,7 +137,19 @@ export async function handleAfterAgent(
 
   const output = safeSerialize({ result: lastContent });
 
-  const verdict = await evaluate(mw, buildEvent(mw, turn, 'WorkflowCompleted', `${turn.runId}-wf`, mw._workflowType, {
+  // A run that ended in an error closes as `WorkflowFailed`, not
+  // `WorkflowCompleted` with a `status: 'failed'` field.
+  //
+  // Core derives `sessions.status` from the EVENT TYPE alone
+  // (`activities/governance/storage_session.go`: only `WorkflowFailed` becomes
+  // `failed`, and only then does it look for a blocking verdict to refine it to
+  // `blocked`/`halted`). The payload `status` below is never consulted for that
+  // decision. Sending `WorkflowCompleted` therefore recorded a session that
+  // died — say, a provider allowlist no provider could satisfy — as a clean
+  // success in the dashboard, which is the one place it must not read as clean.
+  const eventType = failedWith ? 'WorkflowFailed' : 'WorkflowCompleted';
+
+  const verdict = await evaluate(mw, buildEvent(mw, turn, eventType, `${turn.runId}-wf`, mw._workflowType, {
     // `activity_output` is the key Core actually binds: its payload struct
     // (internal/content/governance.go) has ActivityOutput and no
     // workflow_output field at all, and setOptionalPayloadFields copies it
