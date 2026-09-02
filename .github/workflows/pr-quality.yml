@@ -285,7 +285,7 @@ jobs:
               # A count of new violations is not actionable; the issues are.
               pr="${{ github.event.pull_request.number }}"
               issues="$(curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
-                "${SONAR_HOST_URL}/api/issues/search?projects=openbox-openrouter-sdk-ts&resolved=false&inNewCodePeriod=true${pr:+&pullRequest=${pr}}&ps=100" || true)"
+                "${SONAR_HOST_URL}/api/issues/search?componentKeys=openbox-openrouter-sdk-ts&resolved=false${pr:+&pullRequest=${pr}}${pr:+&additionalFields=_all}&ps=100" || true)"
               echo
               echo "[QUALITY GATE] new issues:"
               if jq -e '.issues | length > 0' <<< "${issues}" > /dev/null 2>&1; then
