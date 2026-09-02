@@ -249,25 +249,58 @@ jobs:
         if: ${{ always() && env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
         shell: bash
         run: |
+          set -uo pipefail
           status="${{ steps.sonarqube_quality_gate.outputs.quality-gate-status }}"
+          [[ -z "${status}" ]] && status="UNKNOWN"
 
-          cat << 'EOF'
-          [QUALITY GATE] Checking NEW CODE conditions...
-          - FAIL IF: New Code Issues > 5
-          - FAIL IF: New Code Security Hotspots Reviewed < 100%
-          - FAIL IF: New Code Coverage < 60.0%
-          - FAIL IF: New Code Duplicated Lines > 3.0%
+          # The gate's own verdict, condition by condition. Reading the
+          # thresholds off a hardcoded list told us a gate failed but never
+          # which condition did, which left the dashboard as the only way to
+          # find out — and the dashboard needs credentials CI does not hand out.
+          report="$(find . -name report-task.txt -path '*scannerwork*' | head -n 1)"
+          if [[ -n "${report}" ]]; then
+            ce_task_url="$(grep '^ceTaskUrl=' "${report}" | cut -d= -f2-)"
+            analysis_id=""
+            for _ in $(seq 1 30); do
+              ce="$(curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" "${ce_task_url}" || true)"
+              ce_status="$(jq -r '.task.status // empty' <<< "${ce}")"
+              [[ "${ce_status}" == "SUCCESS" ]] && analysis_id="$(jq -r '.task.analysisId // empty' <<< "${ce}")" && break
+              [[ "${ce_status}" == "FAILED" || "${ce_status}" == "CANCELED" ]] && break
+              sleep 5
+            done
 
-          [QUALITY GATE] Checking OVERALL CODE conditions...
-          - FAIL IF: Overall High Severity Issues > 1
-          - FAIL IF: Overall Medium Severity Issues > 4
-          EOF
+            if [[ -n "${analysis_id}" ]]; then
+              gate="$(curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
+                "${SONAR_HOST_URL}/api/qualitygates/project_status?analysisId=${analysis_id}" || true)"
+              echo "[QUALITY GATE] conditions:"
+              jq -r '.projectStatus.conditions[]
+                | "  \(if .status == "OK" then "PASS" else "FAIL" end)  \(.metricKey): actual=\(.actualValue) \(.comparator) threshold=\(.errorThreshold)"' \
+                <<< "${gate}" || echo "  (could not parse gate response)"
+              echo
+              echo "[QUALITY GATE] failing conditions:"
+              jq -r '.projectStatus.conditions[] | select(.status != "OK")
+                | "  \(.metricKey) = \(.actualValue) (threshold \(.errorThreshold))"' \
+                <<< "${gate}" || true
 
-          if [[ -z "${status}" ]]; then
-            status="UNKNOWN"
+              # A count of new violations is not actionable; the issues are.
+              pr="${{ github.event.pull_request.number }}"
+              issues="$(curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
+                "${SONAR_HOST_URL}/api/issues/search?componentKeys=openbox-openrouter-sdk-ts&resolved=false${pr:+&pullRequest=${pr}}&ps=100" || true)"
+              echo
+              echo "[QUALITY GATE] new issues:"
+              jq -r '.issues[]? | "  \(.severity) \(.rule)\n    \(.component | sub("^[^:]*:"; "")):\(.line // 0)  \(.message)"' \
+                <<< "${issues}" || echo "  (could not list issues)"
+            else
+              echo "Could not resolve the analysis id; see the SonarQube dashboard."
+            fi
+          else
+            echo "No scanner report-task.txt found; see the SonarQube dashboard."
           fi
 
           echo "Quality Gate = ${status}"
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
 
       - name: Fail job when SonarQube quality gate fails
         if: ${{ always() && env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' && steps.sonarqube_quality_gate.outcome == 'failure' }}
