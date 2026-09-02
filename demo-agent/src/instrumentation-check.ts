@@ -9,7 +9,7 @@ import { config as loadEnv } from 'dotenv';
 loadEnv();
 
 import { OpenRouter, callModel, tool } from '@openrouter/agent';
-import { createOpenBoxGovernance } from 'openbox-openrouter-governance';
+import { createOpenBoxGovernance } from '@openbox-ai/openbox-openrouter-governance';
 import { z } from 'zod';
 import { Client as PgClient } from 'pg';
 import Redis from 'ioredis';

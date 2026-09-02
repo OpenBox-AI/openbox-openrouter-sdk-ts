@@ -35,7 +35,7 @@ function baseHeaders(apiKey: string): SignedHeaders {
     Authorization: `Bearer ${apiKey}`,
     'Content-Type': 'application/json',
     Accept: 'application/json',
-    'User-Agent': `openbox-openrouter-governance/${SDK_PACKAGE_VERSION}`,
+    'User-Agent': `@openbox-ai/openbox-openrouter-governance/${SDK_PACKAGE_VERSION}`,
     'X-OpenBox-SDK-Version': SDK_IDENTITY,
   };
 }

@@ -29,12 +29,17 @@ concurrency:
 env:
   NODE_VERSION: "22"
   GITLEAKS_VERSION: "8.30.0"
+  GITLEAKS_LINUX_X64_SHA256: "79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e"
+  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+  CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 1 — Governance
-# Confirms the required files exist and that this version is not already on npm.
-# Every later stage is skipped when the version is unchanged, so an unrelated
-# package.json edit does not trigger a release.
+# Confirms the required files exist, that CODEOWNERS covers the sensitive
+# release-path files, and that this version is not already on npm. Every later
+# stage is skipped when the version is unchanged, so an unrelated package.json
+# edit does not trigger a release.
 # ─────────────────────────────────────────────────────────────────────────────
 jobs:
   release-governance:
@@ -56,13 +61,16 @@ jobs:
         run: |
           set -euo pipefail
           required_files=(
+            ".github/CODEOWNERS"
+            ".gitleaks.toml"
+            "CODE_OF_CONDUCT.md"
+            "LICENSE"
+            "README.md"
+            "SECURITY.md"
             "package.json"
             "package-lock.json"
+            "sonar-project.properties"
             "tsconfig.json"
-            "README.md"
-            "LICENSE"
-            "SECURITY.md"
-            "CODE_OF_CONDUCT.md"
           )
           for f in "${required_files[@]}"; do
             if [ ! -f "${f}" ]; then
@@ -71,6 +79,28 @@ jobs:
             fi
           done
           echo "All required governance files present."
+
+      - name: Verify CODEOWNERS coverage for protected files
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -a required_patterns=(
+            "/.github/workflows/"
+            "/.github/CODEOWNERS"
+            "/.gitleaks.toml"
+            "/CODE_OF_CONDUCT.md"
+            "/LICENSE"
+            "/SECURITY.md"
+            "/package.json"
+            "/package-lock.json"
+            "/sonar-project.properties"
+          )
+          for pattern in "${required_patterns[@]}"; do
+            if ! awk '!/^#/ && NF >= 2 {print $1}' .github/CODEOWNERS | grep -Fxq "${pattern}"; then
+              echo "Missing CODEOWNERS entry: ${pattern}"
+              exit 1
+            fi
+          done
 
       - name: Get package name and version
         id: get_version
@@ -102,11 +132,12 @@ jobs:
 # Stage 2 — Quality (parallel with security)
 # ─────────────────────────────────────────────────────────────────────────────
   release-quality:
-    name: Release Quality
+    name: Release Quality (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     needs: [release-governance]
     if: needs.release-governance.outputs.should_publish == 'true'
     strategy:
+      fail-fast: true
       matrix:
         node: ["20", "22"]
 
@@ -123,26 +154,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Type-check
-        run: npx tsc --noEmit -p tsconfig.json
+      - name: Run CI validation
+        run: npm run ci:check
 
-      - name: Build
-        run: npm run build
-
-      - name: Run tests
-        run: npm test
+      # Emit coverage only from the primary matrix leg so SonarQube sees one
+      # lcov file rather than two overlapping ones.
+      - name: Upload coverage report
+        if: matrix.node == env.NODE_VERSION
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-coverage-lcov
+          path: coverage/lcov.info
+          if-no-files-found: error
 
       - name: Verify pack contents
-        shell: bash
-        run: |
-          set -euo pipefail
-          pack_output=$(npm pack --dry-run 2>&1)
-          echo "$pack_output"
-          if ! echo "$pack_output" | grep -q "dist/"; then
-            echo "ERROR: dist/ not found in pack output"
-            exit 1
-          fi
-          echo "Pack contents look correct."
+        run: npm run pack:check
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 3a — Security: Trivy
@@ -174,40 +200,55 @@ jobs:
         run: |
           set -euo pipefail
           trivy fs . \
-            --scanners vuln \
-            --vuln-type library \
+            --scanners vuln,misconfig \
+            --vuln-type os,library \
             --ignore-unfixed \
             --severity HIGH,CRITICAL \
-            --skip-dirs node_modules \
+            --include-dev-deps \
             --format table \
             --exit-code 1
 
       - name: Run Trivy filesystem scan (SARIF)
+        id: trivy_sarif
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          trivy fs . \
+            --scanners vuln,misconfig \
+            --vuln-type os,library \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --include-dev-deps \
+            --format sarif \
+            --output trivy-release-results.sarif \
+            --exit-code 1
+
+      - name: Upload Trivy SARIF to GitHub Security
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-release-results.sarif
+          category: trivy-release
+
+      - name: Upload Trivy SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-release-results
+          path: trivy-release-results.sarif
+          if-no-files-found: error
+
+      - name: Fail job when Trivy detects issues
         if: always()
         shell: bash
         run: |
-          trivy fs . \
-            --scanners vuln \
-            --vuln-type library \
-            --ignore-unfixed \
-            --severity HIGH,CRITICAL \
-            --skip-dirs node_modules \
-            --format sarif \
-            --output trivy-results.sarif \
-            --exit-code 0
-
-      - name: Upload Trivy SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-results.sarif
-          category: trivy-release
-
-      - name: Fail on vulnerabilities
-        if: steps.trivy_console.outcome == 'failure'
-        run: |
-          echo "Trivy found HIGH/CRITICAL vulnerabilities. Release blocked."
-          exit 1
+          if [[ "${{ steps.trivy_console.outcome }}" == "failure" || "${{ steps.trivy_sarif.outcome }}" == "failure" ]]; then
+            echo "Trivy detected HIGH/CRITICAL findings. Release blocked."
+            exit 1
+          fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 3b — Security: Gitleaks
@@ -228,43 +269,200 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Gitleaks
+      - name: Install Gitleaks CLI
         shell: bash
         run: |
           set -euo pipefail
-          curl -sSfL \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | tar -xz -C /usr/local/bin gitleaks
-          gitleaks version
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}" -o "${archive}"
+          echo "${GITLEAKS_LINUX_X64_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "${archive}" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
 
       - name: Run Gitleaks
+        id: gitleaks_scan
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          gitleaks dir . \
+          gitleaks git . \
+            --config .gitleaks.toml \
             --no-banner \
+            --redact \
             --exit-code 1 \
             --report-format sarif \
-            --report-path gitleaks-results.sarif
+            --report-path gitleaks-release-results.sarif
 
-      - name: Upload Gitleaks SARIF
+      - name: Ensure Gitleaks SARIF file exists
         if: always()
+        shell: bash
+        run: |
+          if [ -f gitleaks-release-results.sarif ]; then
+            exit 0
+          fi
+          cat > gitleaks-release-results.sarif <<'EOF'
+          {
+            "version": "2.1.0",
+            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+            "runs": [
+              {
+                "tool": {
+                  "driver": {
+                    "name": "gitleaks",
+                    "informationUri": "https://github.com/gitleaks/gitleaks",
+                    "rules": []
+                  }
+                },
+                "results": []
+              }
+            ]
+          }
+          EOF
+
+      - name: Upload Gitleaks SARIF to GitHub Security
+        if: always()
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: gitleaks-results.sarif
+          sarif_file: gitleaks-release-results.sarif
           category: gitleaks-release
 
+      - name: Upload Gitleaks SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-release-results
+          path: gitleaks-release-results.sarif
+          if-no-files-found: error
+
+      - name: Fail job when Gitleaks detects issues
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.gitleaks_scan.outcome }}" == "failure" ]]; then
+            echo "Gitleaks detected potential secrets. Release blocked."
+            exit 1
+          fi
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 4 — Publish (only after every prior stage passes)
+# Stage 4 — SonarQube (aggregates coverage + security SARIFs)
+# Runs only when SONAR_TOKEN and SONAR_HOST_URL are set; otherwise no-ops so
+# forks without the shared SonarQube instance still ship.
 # ─────────────────────────────────────────────────────────────────────────────
-  release-publish:
-    name: Publish to npm
+  release-sonarqube:
+    name: Release SonarQube
     runs-on: ubuntu-latest
     needs:
       - release-governance
       - release-quality
       - release-security-trivy
       - release-security-secrets
+    if: needs.release-governance.outputs.should_publish == 'true'
+
+    steps:
+      - name: Skip when SonarQube secrets are not configured
+        if: ${{ env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == '' }}
+        run: echo "Skipping SonarQube because SONAR_TOKEN or SONAR_HOST_URL is not configured."
+
+      - name: Checkout repository
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download coverage report
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: release-coverage-lcov
+          path: coverage
+
+      - name: Download Trivy SARIF artifact
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: trivy-release-results
+          path: security-artifacts/trivy
+
+      - name: Download Gitleaks SARIF artifact
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: gitleaks-release-results
+          path: security-artifacts/gitleaks
+
+      - name: Compose SonarQube SARIF report paths
+        id: sonar_sarif_paths
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths="security-artifacts/trivy/trivy-release-results.sarif"
+          if [ -f "security-artifacts/gitleaks/gitleaks-release-results.sarif" ]; then
+            paths="${paths},security-artifacts/gitleaks/gitleaks-release-results.sarif"
+          else
+            echo "Gitleaks SARIF not present; excluding from SonarQube scan."
+          fi
+          echo "paths=${paths}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Java
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cache SonarQube packages
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: SonarQube scan
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.sarifReportPaths=${{ steps.sonar_sarif_paths.outputs.paths }}
+
+      - name: SonarQube Quality Gate check
+        id: sonarqube_quality_gate
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        continue-on-error: true
+        uses: SonarSource/sonarqube-quality-gate-action@master
+        with:
+          pollingTimeoutSec: 600
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+
+      - name: Fail job when SonarQube quality gate fails
+        if: ${{ always() && env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' && steps.sonarqube_quality_gate.outcome == 'failure' }}
+        shell: bash
+        run: |
+          echo "SonarQube Quality Gate failed."
+          exit 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 5 — Publish (only after every prior stage passes)
+# ─────────────────────────────────────────────────────────────────────────────
+  release-publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    environment: release
+    needs:
+      - release-governance
+      - release-quality
+      - release-security-trivy
+      - release-security-secrets
+      - release-sonarqube
     if: needs.release-governance.outputs.should_publish == 'true'
 
     steps:

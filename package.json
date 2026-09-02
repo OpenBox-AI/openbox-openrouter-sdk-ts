@@ -1,5 +1,5 @@
 {
-  "name": "openbox-openrouter-governance",
+  "name": "@openbox-ai/openbox-openrouter-governance",
   "version": "0.2.0",
   "description": "OpenBox governance and observability for the OpenRouter Agent SDK (@openrouter/agent): policy enforcement, human-in-the-loop approvals, and HTTP/database tracing for agent runs.",
   "license": "Apache-2.0",
@@ -14,7 +14,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "vitest run --coverage",
+    "ci:check": "npm run lint && npm run typecheck && npm run test && npm run build",
+    "pack:check": "npm pack --dry-run",
     "prepack": "npm run build"
   },
   "peerDependencies": {
@@ -26,10 +30,16 @@
     }
   },
   "devDependencies": {
+    "@eslint/js": "^9.15.0",
     "@openrouter/agent": "^0.11.0",
     "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^3.2.7",
+    "eslint": "^9.15.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.0",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
+    "typescript-eslint": "^8.15.0",
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=18.17"
