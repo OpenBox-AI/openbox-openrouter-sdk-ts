@@ -625,9 +625,8 @@ export function createOpenBoxGovernance(
       }),
     ).catch(() => undefined);
 
-    mw._config.logger.warn(
-      `${target}${reason != null ? ` — ${reason}` : ''}`,
-    );
+    const why = reason != null ? ` — ${reason}` : '';
+    mw._config.logger.warn(`${target}${why}`);
   }
 
   /**

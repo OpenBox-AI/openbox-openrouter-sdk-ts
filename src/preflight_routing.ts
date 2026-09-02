@@ -297,7 +297,7 @@ export function routingIntentAttributes(
 ): Record<string, unknown> {
   return {
     'openbox.routing.stage': 'preflight',
-    'openbox.routing.declared': declared != null && declared.only != null,
+    'openbox.routing.declared': declared?.only != null,
     ...routingConstraintAttributes(model, declared, residency),
   };
 }

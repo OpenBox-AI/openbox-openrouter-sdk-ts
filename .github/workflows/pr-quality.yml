@@ -293,7 +293,7 @@ jobs:
               [[ -n "${task_branch}" ]] && scope="&branch=${task_branch}"
               [[ -n "${task_pr}" ]] && scope="&pullRequest=${task_pr}"
               issues="$(curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
-                "${SONAR_HOST_URL}/api/issues/search?componentKeys=openbox-openrouter-sdk-ts&resolved=false${scope}&ps=100" || true)"
+                "${SONAR_HOST_URL}/api/issues/search?componentKeys=openbox-openrouter-sdk-ts&resolved=false&inNewCodePeriod=true${scope}&ps=100" || true)"
               echo
               echo "[QUALITY GATE] new issues:"
               if jq -e '.issues | length > 0' <<< "${issues}" > /dev/null 2>&1; then

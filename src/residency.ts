@@ -285,20 +285,26 @@ export function describeResidencyOutcome(
     dataRegion != null
       ? `processed in ${dataRegion}`
       : 'processed in a region OpenRouter did not report';
-  const verdict =
-    approved === true
-      ? ` — approved (${(residency?.regions ?? []).join(', ')})`
-      : approved === false
-        ? ` — NOT approved; the policy allows ${(residency?.regions ?? []).join(', ')}`
-        : residency?.regions == null || residency.regions.length === 0
-          ? ' — no approved region list, so nothing was promised'
-          : ' — unchecked, no region was reported';
-  const key =
-    isByok == null
-      ? ''
-      : isByok
-        ? ', on your own provider key'
-        : ", on OpenRouter's credit";
+  const approvedRegions = (residency?.regions ?? []).join(', ');
+  const nothingPromised = residency?.regions == null || residency.regions.length === 0;
+
+  let verdict: string;
+  if (approved === true) {
+    verdict = ` — approved (${approvedRegions})`;
+  } else if (approved === false) {
+    verdict = ` — NOT approved; the policy allows ${approvedRegions}`;
+  } else if (nothingPromised) {
+    verdict = ' — no approved region list, so nothing was promised';
+  } else {
+    verdict = ' — unchecked, no region was reported';
+  }
+
+  let key: string;
+  if (isByok == null) {
+    key = '';
+  } else {
+    key = isByok ? ', on your own provider key' : ", on OpenRouter's credit";
+  }
   const keyBreach =
     isOwnKeyHonored(isByok, residency) === false
       ? ' — the policy requires your own key'

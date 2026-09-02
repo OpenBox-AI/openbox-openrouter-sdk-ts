@@ -403,14 +403,18 @@ function isDuplicateSpan(activityId: string, spanData: Record<string, unknown>):
   // Generalized across all hook types (http_request, db_query, file_operation) —
   // previously only http spans were deduplicated, so file/db spans had no
   // duplicate-suppression at all.
-  const identity =
-    hookType === 'http_request'
-      ? [spanData.http_method, spanData.http_url, spanData.http_status_code ?? '']
-      : hookType === 'db_query'
-        ? [spanData.db_system, spanData.db_statement, spanData.rowcount ?? '']
-        : hookType === 'llm_provenance'
-          ? [(spanData.attributes as Record<string, unknown> | undefined)?.['gen_ai.generation.id']]
-          : [spanData.file_path, spanData.file_operation];
+  let identity: unknown[];
+  if (hookType === 'http_request') {
+    identity = [spanData.http_method, spanData.http_url, spanData.http_status_code ?? ''];
+  } else if (hookType === 'db_query') {
+    identity = [spanData.db_system, spanData.db_statement, spanData.rowcount ?? ''];
+  } else if (hookType === 'llm_provenance') {
+    identity = [
+      (spanData.attributes as Record<string, unknown> | undefined)?.['gen_ai.generation.id'],
+    ];
+  } else {
+    identity = [spanData.file_path, spanData.file_operation];
+  }
   const key = [activityId, spanData.stage, hookType, ...identity].join('|');
   const seenAt = _recentSpans.get(key);
   if (seenAt != null && now - seenAt <= _recentSpanTtlMs) {
