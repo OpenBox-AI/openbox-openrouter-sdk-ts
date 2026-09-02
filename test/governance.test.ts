@@ -133,6 +133,8 @@ describe('createOpenBoxGovernance — event lifecycle', () => {
     expect(transport.eventTypes()).toEqual([
       'WorkflowStarted',
       'SignalReceived',
+      // No routing step in the ordinary path: routing is only reported as its
+      // own activity when a policy actually redirects the call.
       'LLMStarted',
       'LLMCompleted',
       'WorkflowCompleted',
@@ -192,7 +194,9 @@ describe('createOpenBoxGovernance — event lifecycle', () => {
     ).rejects.toThrow(/prompt violates policy/);
 
     const types = transport.eventTypes();
-    expect(types).toContain('WorkflowCompleted');
+    // Rejected at the opening gate, so the run failed — the closing event says
+    // so, because Core reads `sessions.status` off the event type.
+    expect(types).toContain('WorkflowFailed');
     // The rejected SignalReceived row is closed rather than left "started".
     const closure = transport
       .events()
@@ -431,7 +435,7 @@ describe('createOpenBoxGovernance — engine failure', () => {
     expect(llmEvents).toHaveLength(2);
     expect(llmEvents[1]).toMatchObject({ status: 'failed' });
     expect(llmEvents[1].activity_id).toBe(llmEvents[0].activity_id);
-    expect(transport.eventTypes()).toContain('WorkflowCompleted');
+    expect(transport.eventTypes()).toContain('WorkflowFailed');
   });
 });
 

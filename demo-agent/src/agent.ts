@@ -59,6 +59,12 @@ async function main() {
       // The one line that governs every tool: wraps each execute so it is
       // evaluated, optionally held for human approval, and reported.
       tools: openbox.tools(ALL_TOOLS),
+      // Routing constraint, when asked for. `callModel` spreads any field it
+      // does not itself consume straight into the request body, so this
+      // reaches OpenRouter as-is — and the SDK reads it back off the same
+      // body to decide `openbox.routing.honored`.
+      ...routingConstraint(),
+      ...modelFallbacks(),
     });
 
     if (stream) {
@@ -84,6 +90,42 @@ async function main() {
   } finally {
     // Drains in-flight span telemetry. Always await it.
     await openbox.close();
+
+    // Print what the provenance actually said. The evidence is the product, so
+    // a run that hides it is a worse demo than one that prints nothing.
+    for (const summary of openbox.routingSummaries()) {
+      const honored = summary.routing_honored;
+      const verdict =
+        honored === undefined
+          ? 'unconstrained (no allowlist requested)'
+          : honored
+            ? 'HONORED'
+            : 'DISHONORED';
+      log(
+        'provenance',
+        `${summary.model_calls} call(s) · served by ${
+          (summary.upstream_providers as string[])?.join(', ') || 'unknown'
+        } · region ${
+          (summary.data_regions as string[])?.join(', ') || 'unknown'
+        } · $${Number(summary.total_cost ?? 0).toFixed(5)} · ${verdict}`,
+      );
+      // The second promise, from the same record: did the model that ran match
+      // the model that was asked for?
+      const modelHonored = summary.model_honored;
+      const modelVerdict =
+        modelHonored === undefined
+          ? 'unchecked (no concrete model requested)'
+          : modelHonored
+            ? 'AS REQUESTED'
+            : `SUBSTITUTED (${(summary.model_substitutions as string[])?.join('; ')})`;
+      log(
+        'provenance',
+        `model ${model()} · ran ${
+          (summary.models_served as string[])?.join(', ') || 'unknown'
+        } · ${modelVerdict}`,
+      );
+      log('provenance', `verify at source: ${(summary.generation_ids as string[])?.join(', ')}`);
+    }
   }
 }
 
@@ -91,6 +133,52 @@ async function main() {
 
 function model(): string {
   return process.env.OPENROUTER_MODEL ?? 'openai/gpt-4o-mini';
+}
+
+/**
+ * Optional `provider.only` allowlist, from `OPENROUTER_PROVIDER_ONLY`
+ * (comma-separated, e.g. `openai` or `openai,azure`).
+ *
+ * This is what makes a call *checkable*. Without it the provenance record still
+ * says who served the prompt, but nothing was promised, so
+ * `openbox.routing.honored` is null and the call is "unconstrained" rather than
+ * a pass. Set it to see the honored path end to end.
+ *
+ * `OPENROUTER_ALLOW_FALLBACKS=false` additionally makes the request fail closed
+ * rather than falling out of the allowlist when the provider is down.
+ */
+function routingConstraint(): Record<string, unknown> {
+  const only = (process.env.OPENROUTER_PROVIDER_ONLY ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (only.length === 0) return {};
+
+  const provider: Record<string, unknown> = { only };
+  if (process.env.OPENROUTER_ALLOW_FALLBACKS === 'false') {
+    provider.allow_fallbacks = false;
+  }
+  log('routing', `provider.only=${only.join(',')}`);
+  return { provider };
+}
+
+/**
+ * Optional model fallback chain, from `OPENROUTER_MODELS` (comma-separated).
+ *
+ * OpenRouter serves the first model in the chain that can take the request, so
+ * the model that answers is not necessarily the one named in `model`. Declaring
+ * the chain is what makes that acceptable rather than a substitution: the SDK
+ * counts a model the caller listed here as honored, and anything else as a
+ * model nobody asked for.
+ */
+function modelFallbacks(): Record<string, unknown> {
+  const models = (process.env.OPENROUTER_MODELS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (models.length === 0) return {};
+  log('routing', `models=${models.join(',')}`);
+  return { models };
 }
 
 function requireEnv(names: string[]): void {

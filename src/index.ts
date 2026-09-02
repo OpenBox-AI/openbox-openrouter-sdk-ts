@@ -5,7 +5,7 @@
  * `openrouter.ts` binding that attaches the middleware to `@openrouter/agent`.
  */
 
-export { createOpenBoxGovernance, type OpenBoxGovernance } from './openrouter';
+export { createOpenBoxGovernance, type OpenBoxGovernance, type ReceiptRef } from './openrouter';
 export { OpenBoxOpenRouterMiddleware } from './middleware';
 
 export { GovernanceClient, type ApprovalPollResponse, type OnApiError } from './client';
@@ -95,7 +95,33 @@ export {
 } from './types';
 
 export {
+  describeResidency,
+  describeResidencyBreach,
+  describeResidencyOutcome,
+  isOwnKeyHonored,
+  isRegionApproved,
+  narrowResidency,
+  readResidency,
+  readResidencyDirective,
+  residencyAttributes,
+  type DataResidency,
+} from './residency';
+
+export {
+  applyRoutingToRequest,
+  describeRouting,
+  narrowRouting,
+  readRoutingDirective,
+  routingIntentAttributes,
+  type NarrowedRouting,
+} from './preflight_routing';
+
+export {
   extractRequestedRouting,
+  readRequestedRouting,
+  extractRequestedModel,
+  readRequestedModel,
+  isModelHonored,
   isRoutingHonored,
   normalizeGenerationRecord,
   provenanceAttributes,

@@ -40,7 +40,7 @@ const DASHBOARD = process.env.OPENBOX_DASHBOARD_URL ?? 'http://localhost:3233';
 // ── governance → UI ─────────────────────────────────────────────────────────
 
 interface UiEvent {
-  type: 'activity' | 'answer' | 'done' | 'error' | 'scenario';
+  type: 'activity' | 'answer' | 'done' | 'error' | 'scenario' | 'provenance';
   [key: string]: unknown;
 }
 
@@ -68,6 +68,21 @@ class ObservingTransport implements OpenBoxTransport {
     const isEvent = options.path.endsWith('/evaluate') && body.hook_trigger !== true;
 
     if (isEvent && typeof body.workflow_id === 'string') this.workflowId = body.workflow_id;
+
+    // The routing record is a hook span, not a lifecycle event — it is how the
+    // SDK writes down where it routed the call. Worth showing: it is the line
+    // that says a refused call was corrected rather than simply refused.
+    const record = routingRecordOf(body);
+    if (record != null) {
+      this.emit({
+        type: 'activity',
+        id: String(body.activity_id ?? ''),
+        name: 'llm_call',
+        stage: 'started',
+        verdict: 'block',
+        resolution: record,
+      });
+    }
 
     const startedAt = Date.now();
     try {
@@ -107,17 +122,57 @@ class ObservingTransport implements OpenBoxTransport {
     this.emit({
       type: 'activity',
       id: String(body.activity_id ?? ''),
-      name: String(body.activity_type ?? 'unknown'),
+      name: label(String(body.activity_type ?? 'unknown')),
       stage: eventType.endsWith('Completed') ? 'completed' : 'started',
       verdict,
       reason: (response?.reason as string | undefined) ?? null,
       // The remediation directive, when a policy attaches one to a block.
       patch: (response?.patch as unknown) ?? null,
+      // What this call declared about its own routing — the claim the verdict
+      // above was passed on, and the reason a `block` here can mean "not as
+      // routed" rather than "not at all".
+      detail: declaredRouting(body),
       durationMs: (body.duration_ms as number | undefined) ?? ms,
       output: preview(body.activity_output),
       governanceMs: ms,
     });
   }
+}
+
+/** Where a call was routed, off the record span the SDK writes inside it. */
+function routingRecordOf(body: Record<string, unknown>): string | null {
+  if (body.hook_trigger !== true || !Array.isArray(body.spans)) return null;
+  const span = body.spans[0] as Record<string, unknown> | undefined;
+  if (span?.hook_type !== 'llm_routing_request') return null;
+  const attrs = (span.attributes ?? {}) as Record<string, unknown>;
+  return (attrs['openbox.routing.resolution'] as string | undefined) ?? null;
+}
+
+/** Activity names, as the dashboard spells them — one vocabulary, two surfaces. */
+function label(activityType: string): string {
+  return activityType;
+}
+
+/**
+ * Where this call is being routed, in words.
+ *
+ * The started half says what the request asked for, the completed half says
+ * where it actually went and who decided — so the row reads as a sentence
+ * rather than as a verdict with no subject.
+ */
+function declaredRouting(body: Record<string, unknown>): string | null {
+  if (!Array.isArray(body.spans)) return null;
+  const span = body.spans.find(
+    (s) => (s as Record<string, unknown>)?.hook_type === 'llm_routing_request',
+  ) as Record<string, unknown> | undefined;
+  if (span == null) return null;
+  const attrs = (span.attributes ?? {}) as Record<string, unknown>;
+  const only = attrs['openbox.routing.requested_only'] as string[] | undefined;
+  const resolution = attrs['openbox.routing.resolution'] as string | undefined;
+  if (resolution != null) return resolution;
+  return only != null && only.length > 0
+    ? `it's being routed — request asks for provider.only=[${only.join(', ')}]`
+    : "it's being routed — request names no provider allowlist";
 }
 
 function preview(value: unknown): string | null {
@@ -194,6 +249,11 @@ async function runAgent(
       instructions: INSTRUCTIONS,
       input: prompt,
       tools: openbox.tools(ALL_TOOLS),
+      // The routing constraint the CALLER declares, when the scenario has one.
+      // `callModel` spreads a field it does not consume into the request body,
+      // so this reaches OpenRouter as written — and the routing step reads
+      // it off the same object to decide on it before it is sent.
+      ...(scenario.provider != null ? { provider: scenario.provider } : {}),
     });
 
     for await (const delta of result.getTextStream()) {
@@ -211,7 +271,37 @@ async function runAgent(
       sessionUrl: await sessionUrl(transport.seenWorkflowId),
     });
   } finally {
+    // Drains the provenance collection, so the summaries below are complete.
     await openbox.close().catch(() => undefined);
+
+    // Close the loop the routing step opened: it said where the prompt
+    // was allowed to go, and this is where it actually went. Both halves are in
+    // the session's Merkle tree; the page is just showing them side by side.
+    for (const summary of openbox.routingSummaries()) {
+      emit({
+        type: 'provenance',
+        served: (summary.upstream_providers as string[] | undefined) ?? [],
+        regions: (summary.data_regions as string[] | undefined) ?? [],
+        requested: (summary.routing_requested_only as string[] | undefined) ?? null,
+        honored: summary.routing_honored ?? null,
+        cost: summary.total_cost ?? null,
+        // Where the data was processed, against the regions the POLICY
+        // approved — there is no request field for this, so the approved list
+        // and the region served come from two different places and the page is
+        // showing the comparison, not a restatement.
+        approvedRegions: (summary.approved_regions as string[] | undefined) ?? null,
+        // How many calls the region check could actually be made on. A region
+        // OpenRouter did not report is unchecked, and saying "0 breaches" over
+        // calls nobody checked is the flattering number this avoids.
+        regionsChecked: (summary.regions_checked as number | undefined) ?? 0,
+        residencyHonored: summary.residency_honored ?? null,
+        unapprovedRegions: (summary.unapproved_regions as string[] | undefined) ?? null,
+        ownKeyCalls: (summary.own_key_calls as number | undefined) ?? 0,
+        ownKeyHonored: summary.own_key_honored ?? null,
+        modelCalls: (summary.model_calls as number | undefined) ?? 0,
+        generationIds: (summary.generation_ids as string[] | undefined) ?? [],
+      });
+    }
   }
 }
 

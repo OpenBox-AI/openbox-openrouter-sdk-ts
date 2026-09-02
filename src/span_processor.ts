@@ -19,10 +19,13 @@
 
 import { AsyncLocalStorage } from 'async_hooks';
 import { setTimeout as _st } from 'timers';
+import { routingConstraintAttributes } from './preflight_routing';
+import type { DataResidency } from './residency';
 import {
   extractRequestedRouting,
-  fetchGenerationRecord,
+  extractRequestedModel,
   provenanceAttributes,
+  fetchGenerationRecord,
   type RequestedRouting,
   type RoutingProvenance,
 } from './provenance';
@@ -63,6 +66,15 @@ export interface RegisterActivityOptions {
   logger: Logger;
   /** GovernanceConfig.governanceTimeout converted to ms. */
   requestTimeoutMs: number;
+  /**
+   * Called when a span-level verdict refuses this activity's operation.
+   *
+   * The refusal is also thrown, which rejects the patched fetch — but the
+   * engine swallows that rejection and the caller's `getText()` then never
+   * settles. This is how the owning run learns, so a blocked call fails loudly
+   * instead of silently.
+   */
+  onBlocked?: (err: Error) => void;
 }
 
 interface ActiveEntry {
@@ -73,6 +85,7 @@ interface ActiveEntry {
   onApiError: OnApiError;
   logger: Logger;
   requestTimeoutMs: number;
+  onBlocked?: (err: Error) => void;
 }
 
 // Global registry keyed by activityId — only one entry active at a time per LLM call
@@ -321,6 +334,19 @@ async function evaluateHookSpan(
   // `stage` field. Relabelling the completed hook as 'ActivityCompleted' made
   // Core read it as a lifecycle completion instead, so durations were never
   // filled in and every span sat at "started" on the dashboard.
+  // The constraint this call is running under, on the span the policy is being
+  // asked about. Same keys as the pre-flight claim, so one guard covers both.
+  const inForce = _activityRouting.get(entry.ctx.activity_id);
+  if (inForce != null) {
+    const stamped = routingConstraintAttributes(inForce.model, inForce.routing, inForce.residency);
+    if (Object.keys(stamped).length > 0) {
+      spanData.attributes = {
+        ...(spanData.attributes as Record<string, unknown> | undefined),
+        ...stamped,
+      };
+    }
+  }
+
   const payload: Record<string, unknown> = {
     ...entry.ctx,
     timestamp: rfc3339Now(),
@@ -343,7 +369,17 @@ async function evaluateHookSpan(
       await enforceHookVerdict(entry, response, String(spanData.http_url ?? spanData.name ?? 'hook'));
     }
   } catch (err) {
-    if (err instanceof GovernanceBlockedError || err instanceof GovernanceHaltError) throw err;
+    if (err instanceof GovernanceBlockedError || err instanceof GovernanceHaltError) {
+      // Tell the owning run, so the refusal reaches the caller.
+      //
+      // Throwing here rejects the patched fetch — and the engine swallows that
+      // rejection, leaving the caller's `getText()` pending forever. Measured:
+      // a blocked model call exited 0 with no answer and no error. The run's
+      // own channel is checked when the engine settles AND raced against it, so
+      // a refusal that the engine never reports still reaches the caller.
+      entry.onBlocked?.(err);
+      throw err;
+    }
     // Auth/signing failures always hard-fail, regardless of onApiError.
     if (err instanceof GovernanceAuthError) throw err;
     // Other soft failures (network/API) respect the configured policy —
@@ -367,14 +403,18 @@ function isDuplicateSpan(activityId: string, spanData: Record<string, unknown>):
   // Generalized across all hook types (http_request, db_query, file_operation) —
   // previously only http spans were deduplicated, so file/db spans had no
   // duplicate-suppression at all.
-  const identity =
-    hookType === 'http_request'
-      ? [spanData.http_method, spanData.http_url, spanData.http_status_code ?? '']
-      : hookType === 'db_query'
-        ? [spanData.db_system, spanData.db_statement, spanData.rowcount ?? '']
-        : hookType === 'llm_routing'
-          ? [(spanData.attributes as Record<string, unknown> | undefined)?.['gen_ai.generation.id']]
-          : [spanData.file_path, spanData.file_operation];
+  let identity: unknown[];
+  if (hookType === 'http_request') {
+    identity = [spanData.http_method, spanData.http_url, spanData.http_status_code ?? ''];
+  } else if (hookType === 'db_query') {
+    identity = [spanData.db_system, spanData.db_statement, spanData.rowcount ?? ''];
+  } else if (hookType === 'llm_provenance') {
+    identity = [
+      (spanData.attributes as Record<string, unknown> | undefined)?.['gen_ai.generation.id'],
+    ];
+  } else {
+    identity = [spanData.file_path, spanData.file_operation];
+  }
   const key = [activityId, spanData.stage, hookType, ...identity].join('|');
   const seenAt = _recentSpans.get(key);
   if (seenAt != null && now - seenAt <= _recentSpanTtlMs) {
@@ -1131,6 +1171,41 @@ const _assistantText = new Map<string, string>();
 const _llmSpanPending = new Set<string>();
 
 /**
+ * The routing constraint in force for an activity, and the model it names.
+ *
+ * Stamped onto every span sent under that activity so a policy can tell an
+ * already-routed call from an unrouted one. A routing policy is stateless: it
+ * is asked about the activity and again about the HTTP request inside it, and
+ * without these facts on the span there is no way to write a rule that permits
+ * the call the routing step just corrected — so the rule refuses its own
+ * correction and the run never completes.
+ */
+const _activityRouting = new Map<
+  string,
+  {
+    routing: RequestedRouting | null;
+    model: string | null;
+    residency: DataResidency | null;
+  }
+>();
+
+/** Record the constraint in force for an activity, for stamping onto its spans. */
+export function setActivityRouting(
+  activityId: string,
+  routing: RequestedRouting | null,
+  model: string | null,
+  /**
+   * The approved-region list in force, when the agent's policy states one. On
+   * the span for the same reason the provider allowlist is: a residency rule is
+   * stateless too, and is asked about the HTTP request inside the call as well
+   * as about the call itself.
+   */
+  residency: DataResidency | null = null,
+): void {
+  _activityRouting.set(activityId, { routing, model, residency });
+}
+
+/**
  * Routing provenance awaiting collection, keyed by activity.
  *
  * Set when a model call's completed span is built (that is where the
@@ -1139,7 +1214,12 @@ const _llmSpanPending = new Set<string>();
  */
 const _pendingRouting = new Map<
   string,
-  { generationId: string; requested: RequestedRouting | null; entry: ActiveEntry }
+  {
+    generationId: string;
+    requested: RequestedRouting | null;
+    requestedModel: string | null;
+    entry: ActiveEntry;
+  }
 >();
 
 /**
@@ -1320,6 +1400,7 @@ function recordRoutingCandidate(
   _pendingRouting.set(activityId, {
     generationId,
     requested: extractRequestedRouting(requestBody),
+    requestedModel: extractRequestedModel(requestBody),
     entry,
   });
 }
@@ -1333,19 +1414,46 @@ function recordRoutingCandidate(
  * hashed into the session's Merkle tree, so the provenance is sealed under the
  * signed session root rather than being a log line someone could edit.
  */
-export function beginRoutingAttestation(activityId: string): void {
+export function beginRoutingAttestation(
+  activityId: string,
+  /**
+   * Routing read off the caller's request OBJECT, used when the wire body was
+   * not captured. `captureRequestObjectBody` is off by default (cloning a
+   * `Request` broke the OpenRouter client's retries), so without this the
+   * honored comparison is inert for exactly the client this SDK governs.
+   */
+  declaredRouting?: RequestedRouting | null,
+  /** The model named on the caller's request object, same fallback reasoning. */
+  declaredModel?: string | null,
+  /**
+   * The approved-region list this call ran under. Unlike the two above it has
+   * no request-body fallback, because it never travels on the request: it comes
+   * from the policy, and this is its only route into the record.
+   */
+  residency?: DataResidency | null,
+): void {
   const pending = _pendingRouting.get(activityId);
   if (pending == null) return;
   _pendingRouting.delete(activityId);
   if (!routingAttestationEnabled()) return;
 
   const job = (async (): Promise<RoutingProvenance | null> => {
-    const record = await fetchGenerationRecord(pending.generationId, pending.requested, {
-      apiKey: _routingAttestation.apiKey!,
-      baseUrl: _routingAttestation.baseUrl,
-      // Our own lookup must never be captured as one of the agent's spans.
-      markInternal: (init) => ({ ...init, [OPENBOX_INTERNAL_REQUEST]: true }),
-    });
+    // Body-derived wins when present — it is what actually went over the wire.
+    // The declared constraint is the fallback, not an override.
+    const requested = pending.requested ?? declaredRouting ?? null;
+    const requestedModel = pending.requestedModel ?? declaredModel ?? null;
+    const record = await fetchGenerationRecord(
+      pending.generationId,
+      requested,
+      {
+        apiKey: _routingAttestation.apiKey!,
+        baseUrl: _routingAttestation.baseUrl,
+        // Our own lookup must never be captured as one of the agent's spans.
+        markInternal: (init) => ({ ...init, [OPENBOX_INTERNAL_REQUEST]: true }),
+      },
+      requestedModel,
+      residency ?? null,
+    );
     if (record == null) {
       // Evidence that could not be collected is worth surfacing: the run is
       // fine, but its provenance has a hole in it.
@@ -1355,6 +1463,20 @@ export function beginRoutingAttestation(activityId: string): void {
       return null;
     }
 
+    // Emitted as a span, because that is the only channel that reaches Core.
+    //
+    // This was briefly removed on the grounds that a span should stand for
+    // something the run DID, and this record is an announcement about something
+    // that already happened. True as far as it goes — and it took routing
+    // provenance off the dashboard entirely. The summary that rides on
+    // `WorkflowCompleted.extra` never lands: Core's payload struct has no such
+    // field and drops it at unmarshal, exactly as it does `workflow_output`.
+    // Span attributes are also what Core hashes into the session's Merkle tree,
+    // so this is the only form in which the record is attested at all.
+    //
+    // If it should not appear as a row in the execution tree, that is a display
+    // decision for the dashboard: the data has to exist either way, and the
+    // routing-integrity panel reads it from here.
     const nowNs = Date.now() * 1_000_000;
     const spanData: Record<string, unknown> = {
       span_id: stableSpanId(`${activityId}|routing|${record.generationId}`),
@@ -1362,7 +1484,12 @@ export function beginRoutingAttestation(activityId: string): void {
         stableSpanId(`${activityId}|routing-trace|${record.generationId}`) +
         stableSpanId(`${activityId}|routing-trace2|${record.generationId}`),
       parent_span_id: null,
-      name: `routing ${record.provider ?? 'unknown'} ${record.model ?? ''}`.trim(),
+      // Says what it is: OpenRouter's record of who actually served the call.
+      // "routing …" read as though it were the routing decision, which happens
+      // before the call and is a different row.
+      name: `served by ${record.provider ?? 'an unreported provider'}${
+        record.model != null ? ` (${record.model})` : ''
+      }`,
       kind: 'CLIENT',
       stage: 'completed',
       start_time: nowNs,
@@ -1371,8 +1498,18 @@ export function beginRoutingAttestation(activityId: string): void {
       attributes: provenanceAttributes(record),
       status: { code: 'OK', description: null },
       events: [],
-      hook_type: 'llm_routing',
-      semantic_type: 'llm_completion',
+      hook_type: 'llm_provenance',
+      // Not a completion, and not the routing decision either: this is the
+      // gateway's record OF a completion, read back after the fact. Core
+      // recomputes semantic types on ingest and classifies it the same way
+      // from `gen_ai.generation.id`, so this is the honest label rather than
+      // the operative one.
+      //
+      // `llm_routing` belongs to the pre-flight decision — where a policy will
+      // permit this prompt to go — which is a governance act a rule can be
+      // written about. Naming both the same made the timeline read "routing"
+      // twice for opposite things.
+      semantic_type: 'llm_provenance',
       gen_ai_system: record.provider ?? 'openrouter',
       activity_id: activityId,
     };
@@ -1502,6 +1639,7 @@ export function registerActivity(
     onApiError: opts.onApiError,
     logger: opts.logger,
     requestTimeoutMs: opts.requestTimeoutMs,
+    onBlocked: opts.onBlocked,
   });
 }
 
@@ -1606,6 +1744,7 @@ export function isActivityApproved(activityId: string): boolean {
  * 
  */
 export async function unregisterActivity(activityId: string): Promise<void> {
+  _activityRouting.delete(activityId);
   // Drain first: dropping the registration while completion spans are still in
   // flight makes evaluateActivitySpan discard them, so operations would show a
   // 'started' span and never a 'completed' one.
