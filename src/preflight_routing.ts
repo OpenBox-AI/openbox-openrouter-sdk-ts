@@ -168,6 +168,19 @@ function intersect(declared: string[], directive: string[]): string[] {
   return declared.filter((entry) => directive.some((allowed) => same(entry, allowed)));
 }
 
+/**
+ * One list narrowed by another: the intersection when both are stated, a copy
+ * of whichever one is, `undefined` when neither is.
+ */
+function narrowList(
+  declared: string[] | undefined,
+  directive: string[] | undefined,
+): string[] | undefined {
+  if (directive == null) return declared == null ? undefined : [...declared];
+  if (declared == null) return [...directive];
+  return intersect(declared, directive);
+}
+
 function sameList(a: string[] | undefined, b: string[] | undefined): boolean {
   if (a == null || b == null) return a == null && b == null;
   return a.length === b.length && a.every((entry, i) => same(entry, b[i]));
@@ -214,28 +227,22 @@ export function narrowRouting(
   let satisfiable = true;
   const removed: string[] = [];
 
-  if (directive.only != null) {
-    if (declared?.only != null) {
-      result.only = intersect(declared.only, directive.only);
-      removed.push(...declared.only.filter((p) => !result.only!.some((kept) => same(kept, p))));
+  const only = narrowList(declared?.only, directive.only);
+  if (only != null) {
+    result.only = only;
+    if (declared?.only != null && directive.only != null) {
+      removed.push(...declared.only.filter((p) => !only.some((kept) => same(kept, p))));
       // Disjoint: the caller allowed only providers the policy forbids.
-      if (result.only.length === 0) satisfiable = false;
-    } else {
-      result.only = [...directive.only];
+      if (only.length === 0) satisfiable = false;
     }
-  } else if (declared?.only != null) {
-    result.only = [...declared.only];
   }
 
-  if (directive.models != null) {
-    if (declared?.models != null) {
-      result.models = intersect(declared.models, directive.models);
-      if (result.models.length === 0) satisfiable = false;
-    } else {
-      result.models = [...directive.models];
+  const models = narrowList(declared?.models, directive.models);
+  if (models != null) {
+    result.models = models;
+    if (declared?.models != null && directive.models != null && models.length === 0) {
+      satisfiable = false;
     }
-  } else if (declared?.models != null) {
-    result.models = [...declared.models];
   }
 
   const fallbacks = [declared?.allowFallbacks, directive.allowFallbacks].filter(
