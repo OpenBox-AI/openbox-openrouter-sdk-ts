@@ -18,7 +18,7 @@
     "ioredis": "^6.0.0",
     "mongodb": "^7.6.0",
     "mysql2": "^3.24.2",
-    "@openbox-ai/openbox-openrouter-governance": "file:..",
+    "@openbox-ai/openbox-openrouter-governance": "^0.2.0",
     "pg": "^8.23.0",
     "zod": "^4.0.0"
   },
