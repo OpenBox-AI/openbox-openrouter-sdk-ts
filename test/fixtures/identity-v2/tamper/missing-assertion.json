@@ -1,0 +1,14 @@
+{
+  "name": "missing-assertion",
+  "description": "No X-OpenBox-Agent-Assertion header at all.",
+  "based_on": "evaluate",
+  "method": "POST",
+  "path": "/api/v2/governance/evaluate",
+  "api_key": "obx_test_fixture0000000000000000000000000",
+  "body_base64": "eyJzZXNzaW9uX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBhIiwiZXZlbnRfdHlwZSI6IkFjdGl2aXR5U3RhcnRlZCJ9",
+  "assertion": "",
+  "expect": {
+    "valid": false,
+    "reason_code": "assertion_missing"
+  }
+}

@@ -28,7 +28,19 @@ export {
   type OpenBoxCredentials,
   type OpenBoxRequestOptions,
   type OpenBoxTransport,
+  type ResolvedCredentials,
 } from './transport';
+export {
+  GovernanceContractError,
+  OpenBoxAssertionError,
+  OpenBoxIdentityBootstrapError,
+  OpenBoxIdentityConfigError,
+  OpenBoxWorkloadAuthError,
+  type WorkloadAuthStage,
+} from './errors';
+export type { AgentIdentityMethod } from './identity/identity-resolution';
+export type { IdentityBootstrapDocument } from './identity/okta-bootstrap';
+export type { WorkloadBootstrapDocument } from './identity/workload-documents';
 export {
   handleAfterAgent,
   handleBeforeAgent,

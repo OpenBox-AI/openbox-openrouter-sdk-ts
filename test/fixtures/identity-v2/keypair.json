@@ -1,0 +1,54 @@
+{
+  "WARNING": "fixture-only, never deploy",
+  "description": "RSA-2048 keypair generated for the v2 agent-identity golden fixtures only. Allowlist this path in secret scanning; never loosen a global rule to accommodate it.",
+  "kid": "fixture-okta-credential-kid-0001",
+  "private_jwk": {
+    "alg": "RS256",
+    "d": "B43luilfVpDG_ejg8dnmgPdrU8gBqnjWMGfxs3MaJFJyfW_GDASLPiJE15bjr0BBSeycvM_1wBy0Y-_txH6zw-ozpt9VRIAIK7xTn828pS8VaqIQRqDBQqpRd7ZJB3lcsxSmKjM5rAbuvFjw5APTnMotlty_mPJCcwCWqNpLGNQXbVhG7_-fnqQMW8HT4sRtynDi7RACFIxnCcX57R83oS2d53eIRws9KcZ4Ot-H61kNgyIw8bKdYFdo40ccBEISbNIBHHZAGV1BYoYaPDspV39vIVBuoWlVBs7W_75kHbgqQPH4C2dyRf0iFsguswgvmcB0_OD5n8h96jL1YYCH0Q",
+    "dp": "K27ZTq0eq901ctnWH-vfIvldHSDz4subkcoYZix91OyzuX-XR0bR9HwYqClSQz3-pqVQFSkGbDnlogWWzO5CHZWvQVCT-m0TmweAkXwfVmhPwGumnXQO_Oqiz98TaBzqJVTD0VOyPxb4sd75OKuYVGWSfWBjXCtIUxN-BEc0Mw",
+    "dq": "yPqQsJZtPsBjkdWO8DqODf2tDarHwtCSwwi4rQUoo5gE82La4LOxbPxAeTLMDmn9XEPWoKbDJzXYaHg1piJve5VMBUxZ1igd8ud8-KvK1a6xgf2cM1oHoROiqpbkDat_WpQPpLPTu1n5N7gyVO2LxkIrIHIcUR9A3uTVXUxFQyU",
+    "e": "AQAB",
+    "kid": "fixture-okta-credential-kid-0001",
+    "kty": "RSA",
+    "n": "wiat4phYVsAbLMMMHs4KU7gmEZolmD62CQx1mUdwLj1SG-973OwMUN3281LZ3XWDVLiWVGZBdoIon3Rs3h1XM8yOQ1yTW-OOVS637ne2Z5PWaMHZHgU1jRvsIBnGWco1DS-1_u9ScoH76XrNsviImF_P6ozLw_N9neuv1Lnr1VvvYqeTGTzA4bWMtVCOczKJNh3_QtcPHK6yRrvgkmSRqcZMWPaiOoOF5sX46p1lbRr47ostcWcgGNE8pSVdV7ksF51FKyC7CA2w8hvNlxiiZtxSpbxhXsyUoNq40XjGk38P0VSiW6pvgT25aEuK_5T49-1hRlYKEaO8SNNxv01sFw",
+    "p": "wxIMTrWRR8mRH7Tt7PKCgY15qGMbA1wKnvoA2MmdN8OFKVJCXbiVQD8blV43zKLXGVUrsUhX86ecj1rSSjGq39ssMWaMiz8flK-kXkH6tgdoA0mq045A2_VUHTnhz3G5TXRe--vaJ3XAJ7amlxofcD5vxWJCL2ovIQyml6uoUcM",
+    "q": "_ssdWNd3TrPIkSmHAjiTD5pRep5iyG8S8ygWBA9XCYvGwCGqdG_ooRxbrk5g5jRh55ydhQGMjlQ2wxtXXLL_XwUu00TxsiHxP2tG-Dvg7YLqTuIJIGcjRQESxkz1jIEd5__F9wOkV4_d8BIxwS1AQ0JrdtAAuqc-OWI8jiJPox0",
+    "qi": "gH2FSYHfNjO9C8A1IIPugmeIRDefMFgousQGnx_-Woibq7ljNUWh8TMfmDGfQigPDRRrEACEQNKabWVBkBPAE0BW6zocailqPqx79w_z2SMHz6yV1CDSCinHC9KGtkohYYN7SnIkSYS8yaeEpYUK-Ttyh0AteY-GywgLEltOMFI",
+    "use": "sig"
+  },
+  "public_jwk": {
+    "alg": "RS256",
+    "e": "AQAB",
+    "kid": "fixture-okta-credential-kid-0001",
+    "kty": "RSA",
+    "n": "wiat4phYVsAbLMMMHs4KU7gmEZolmD62CQx1mUdwLj1SG-973OwMUN3281LZ3XWDVLiWVGZBdoIon3Rs3h1XM8yOQ1yTW-OOVS637ne2Z5PWaMHZHgU1jRvsIBnGWco1DS-1_u9ScoH76XrNsviImF_P6ozLw_N9neuv1Lnr1VvvYqeTGTzA4bWMtVCOczKJNh3_QtcPHK6yRrvgkmSRqcZMWPaiOoOF5sX46p1lbRr47ostcWcgGNE8pSVdV7ksF51FKyC7CA2w8hvNlxiiZtxSpbxhXsyUoNq40XjGk38P0VSiW6pvgT25aEuK_5T49-1hRlYKEaO8SNNxv01sFw",
+    "use": "sig"
+  },
+  "undersized_key_for_negative_test": {
+    "WARNING": "fixture-only, never deploy",
+    "description": "RSA-1024. Exists solely so the min-key-size rejection can be asserted.",
+    "kid": "fixture-okta-credential-kid-0001",
+    "private_jwk": {
+      "alg": "RS256",
+      "d": "Mpxp9-P5V6wjL0mUxpPCN25K5mqju7-SiJc-pCPFqFe2lS3Ts6ARwghf_xLhUFYC9M7AxHJqlv8pB-EHXiEyNCC7Egp_30dFW-xNayFNnsHbYkhvhm6qtvoJORuUjm9RcnDMCN_Ph73xv54Jphfj5EJh0jAbQVJkXUB6tITlQ4k",
+      "dp": "YweIlGABabLqKNsnamhtFjjaEVA9kR_CzaM0AreLRT_f6lLc65pQu1AJ8eEQrTBDHCgOZ6tYIyIveTeUJtGc8Q",
+      "dq": "4EGtA5QfJBssbExbV8KorUzDk8VQqzKqoVkWqbq2Dh8mxUGElufG_KYtIDNaN6KGLDR2gtZdeDi8usewOxQ6xQ",
+      "e": "AQAB",
+      "kid": "fixture-okta-credential-kid-0001",
+      "kty": "RSA",
+      "n": "zNDk1svERbxnR4DHj4UXP5hWYp4o5qgvHCRw05w3vYCWcQRGLZob1tanslWK1fLKDYrvrntdbEWWJr72akDdZp5AukKXb1ypyJ94PCGikxF5BC2RmZ5L-_gMdtOmI_1Wcwq3dz3gC2_jSWULm2wuJWXhvY1afyCBF0jucryPFNk",
+      "p": "5F0QgFj5_4jYJc7to2Ykqtcbgtlml6qR5ueMwRX_La33zgOYpj1vkQgVDzI20soi6vNN3EXl-NCSGaVAFaumPQ",
+      "q": "5ZpNdKkV-Bk-60hdunW_3_aY3SZJhHVlJ5iYBGOEndVtSGihIEGELMwFIO2iAQ0AQT9Q5CwbC7LlpYd7EuwuzQ",
+      "qi": "C93R0LremNBrBowPVnIt14h49gxmZmcpOVAqyt6JgtMUDq52ANz68NXJoPh1IWBB1ffUFu-p14WCIpx2xsVysA",
+      "use": "sig"
+    },
+    "public_jwk": {
+      "alg": "RS256",
+      "e": "AQAB",
+      "kid": "fixture-okta-credential-kid-0001",
+      "kty": "RSA",
+      "n": "zNDk1svERbxnR4DHj4UXP5hWYp4o5qgvHCRw05w3vYCWcQRGLZob1tanslWK1fLKDYrvrntdbEWWJr72akDdZp5AukKXb1ypyJ94PCGikxF5BC2RmZ5L-_gMdtOmI_1Wcwq3dz3gC2_jSWULm2wuJWXhvY1afyCBF0jucryPFNk",
+      "use": "sig"
+    }
+  }
+}

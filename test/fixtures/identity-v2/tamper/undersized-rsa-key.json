@@ -1,0 +1,14 @@
+{
+  "name": "undersized-rsa-key",
+  "description": "Correctly signed by an RSA-1024 key, below the 2048-bit floor.",
+  "based_on": "evaluate",
+  "method": "POST",
+  "path": "/api/v2/governance/evaluate",
+  "api_key": "obx_test_fixture0000000000000000000000000",
+  "body_base64": "eyJzZXNzaW9uX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBhIiwiZXZlbnRfdHlwZSI6IkFjdGl2aXR5U3RhcnRlZCJ9",
+  "assertion": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImZpeHR1cmUtb2t0YS1jcmVkZW50aWFsLWtpZC0wMDAxIiwidHlwIjoib3BlbmJveC1hZ2VudC1wcm9vZitqd3QifQ.eyJhdWQiOiJ1cm46b3BlbmJveDpmaXh0dXJlLWRlcGxveW1lbnQ6Y29yZSIsImJvZHlfc2hhMjU2IjoiMTZkMDE3OTg1YjY2YWUwYTgyNDYyNWRhNGJiMjY1NTI4ZTk4OTQwODY3Zjc3ZmVlZWZhOTQ4OTFlMmQxYWJkZSIsImV4cCI6MTc4NTMyMTA2MCwiaHRtIjoiUE9TVCIsImh0dSI6Ii9hcGkvdjIvZ292ZXJuYW5jZS9ldmFsdWF0ZSIsImlhdCI6MTc4NTMyMTAwMCwiaXNzIjoiZml4dHVyZS1va3RhLWFpLWFnZW50LTAwMDEiLCJqdGkiOiJmaXh0dXJlLWp0aS10YW1wZXIiLCJvYnhfYWdlbnRfaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJvYnhfYXBpX2tleV9zaGEyNTYiOiIxMTAzMDlhMGNkNzE1NzE3MWQzOTU5ZDNiNDk0NTBmNjQyNzA5Yzg1MTdiZTNhNzdkMmU1ZDJkNTJhNGNlOTc3Iiwib2J4X2RlcGxveW1lbnRfaWQiOiJmaXh0dXJlLWRlcGxveW1lbnQiLCJvYnhfb3JnYW5pemF0aW9uX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwic3ViIjoiZml4dHVyZS1va3RhLWFpLWFnZW50LTAwMDEifQ.gnrXH-8eSoFNMaY3T7ejeKZ0G9ZjBVLpcxaDpYDm1lflEdBjqayGdsoLmVx29QSf1MEG5sy2iuu8jTsZ96vGrAJybw_OwQQ3o0rRyisqzu3jTgBUksN4Qr09sHYIWGPv7qirut4i1m2WJN6sMyVtHxk6cPEoKPrMKXQhAvw4ZA0",
+  "expect": {
+    "valid": false,
+    "reason_code": "assertion_key_too_small"
+  }
+}

@@ -11,6 +11,7 @@
  *     SDK exposes no pre-model hook — see openrouter.ts).
  */
 
+import { envNumber, envString } from './env';
 import type { OpenBoxCredentials, OpenBoxTransport } from './transport';
 
 export type DatabaseDriverName = 'pg' | 'mysql2' | 'mongodb' | 'redis' | 'ioredis';
@@ -25,6 +26,8 @@ export const ALL_DATABASE_DRIVERS: DatabaseDriverName[] = [
 
 export interface Logger {
   warn(message: string, meta?: unknown): void;
+  /** Optional. One-line status messages, e.g. that workload authentication is ready. */
+  info?(message: string, meta?: unknown): void;
 }
 
 const consoleLogger: Logger = {
@@ -112,6 +115,12 @@ export interface HITLConfig {
   pollIntervalMs: number;
   /** null = poll indefinitely (matches the SDK's explicit opt-out). */
   timeoutMs: number | null;
+  /**
+   * Ends an in-progress approval wait — on shutdown, say. An aborted wait
+   * fails safe: the held operation does not run. The in-flight poll request
+   * is cancelled too.
+   */
+  abortSignal?: AbortSignal;
 }
 
 export interface GovernanceConfig {
@@ -139,13 +148,6 @@ export interface GovernanceConfig {
   instrumentDatabases: boolean;
   databases: Set<DatabaseDriverName>;
   logger: Logger;
-}
-
-function envNumber(name: string): number | undefined {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : undefined;
 }
 
 /**
@@ -182,6 +184,7 @@ export function mergeConfig(opts: OpenBoxOpenRouterOptions): GovernanceConfig {
         opts.hitl?.timeoutMs !== undefined
           ? opts.hitl.timeoutMs
           : envNumber('OPENBOX_HITL_TIMEOUT_MS') ?? DEFAULT_APPROVAL_MAX_WAIT_MS,
+      abortSignal: opts.hitl?.abortSignal,
     },
     // HTTP instrumentation is always on (HTTP is the transport every provider call
     // uses). File IO is off — file reads are almost always
@@ -191,11 +194,11 @@ export function mergeConfig(opts: OpenBoxOpenRouterOptions): GovernanceConfig {
     spanConcurrency:
       opts.spanConcurrency ?? envNumber('OPENBOX_SPAN_CONCURRENCY') ?? 4,
     attestRouting:
-      opts.attestRouting ?? process.env.OPENBOX_ATTEST_ROUTING !== 'false',
+      opts.attestRouting ?? envString('OPENBOX_ATTEST_ROUTING') !== 'false',
     preflightRouting:
-      opts.preflightRouting ?? process.env.OPENBOX_PREFLIGHT_ROUTING !== 'false',
+      opts.preflightRouting ?? envString('OPENBOX_PREFLIGHT_ROUTING') !== 'false',
     openrouterApiKey:
-      opts.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? null,
+      opts.openrouterApiKey ?? envString('OPENROUTER_API_KEY') ?? null,
     instrumentFileIo: opts.instrumentFileIo ?? false,
     instrumentDatabases: opts.instrumentDatabases ?? true,
     databases,

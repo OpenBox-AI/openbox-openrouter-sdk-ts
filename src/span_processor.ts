@@ -36,15 +36,13 @@ import {
   SoftGovernanceError,
   type OpenBoxTransport,
 } from './transport';
+import { GovernanceContractError, OpenBoxIdentityConfigError } from './errors';
 import { safeString } from './error-info';
-import { GovernanceClient, OnApiError } from './client';
+import { GovernanceClient, OnApiError, missingApprovalIds } from './client';
+import { ApprovalWaitAbortedError, sleepUnlessAborted } from './wait';
 import type { HITLConfig, Logger } from './config';
 import { rfc3339Now, stableSpanId, GovernanceVerdictResponse } from './types';
 import { GovernanceBlockedError, GovernanceHaltError, formatActivityRejectedMessage, verdictFromString } from './verdict';
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => _st(resolve, ms));
-}
 
 // ── Activity context registry (mirrors WorkflowSpanProcessor._activity_context) ──
 
@@ -380,8 +378,16 @@ async function evaluateHookSpan(
       entry.onBlocked?.(err);
       throw err;
     }
-    // Auth/signing failures always hard-fail, regardless of onApiError.
-    if (err instanceof GovernanceAuthError) throw err;
+    // Auth/signing failures always hard-fail, regardless of onApiError — and
+    // so do IAM v3 contract errors and identity misconfiguration, which are
+    // never outages.
+    if (
+      err instanceof GovernanceAuthError ||
+      err instanceof GovernanceContractError ||
+      err instanceof OpenBoxIdentityConfigError
+    ) {
+      throw err;
+    }
     // Other soft failures (network/API) respect the configured policy —
     // default fail_open so governance errors don't crash the model call.
     if (err instanceof SoftGovernanceError && entry.onApiError === 'fail_closed') throw err;
@@ -579,18 +585,56 @@ async function pollHookApproval(
     throw abortAndThrow(activityId, `Approval required for activity ${activityType}`);
   }
 
+  const missing = missingApprovalIds({
+    workflowId: entry.ctx.workflow_id,
+    runId: entry.ctx.run_id,
+    activityId,
+  });
+  if (missing.length > 0) {
+    throw abortAndThrow(
+      activityId,
+      `Approval required for activity ${activityType}, but the approval cannot be polled (missing ${missing.join(', ')}) — not running it`,
+    );
+  }
+
+  const { abortSignal } = hitl;
+  // The hook-level twin of pollApprovalOrHalt's abort handling: fail safe,
+  // never retried as a transient poll failure.
+  const aborted = () =>
+    abortAndThrow(
+      activityId,
+      `Approval wait aborted for activity ${activityType} (workflow_id=${entry.ctx.workflow_id}, run_id=${entry.ctx.run_id}, activity_id=${activityId}) — not running it`,
+    );
+  const pause = async (ms: number) => {
+    try {
+      await sleepUnlessAborted(ms, abortSignal);
+    } catch (err) {
+      if (err instanceof ApprovalWaitAbortedError) throw aborted();
+      throw err;
+    }
+  };
+
   const client = new GovernanceClient(entry.transport, entry.traceId, entry.requestTimeoutMs);
   const startedAt = Date.now();
   while (hitl.timeoutMs == null || Date.now() - startedAt <= hitl.timeoutMs) {
-    const response = await client.pollApproval(
-      entry.ctx.workflow_id,
-      entry.ctx.run_id,
-      activityId,
-      approvalId,
-      entry.onApiError,
-    );
+    if (abortSignal?.aborted) throw aborted();
+    let response;
+    try {
+      response = await client.pollApproval(
+        entry.ctx.workflow_id,
+        entry.ctx.run_id,
+        activityId,
+        approvalId,
+        entry.onApiError,
+        abortSignal,
+      );
+    } catch (err) {
+      if (abortSignal?.aborted) throw aborted();
+      throw err;
+    }
+    if (abortSignal?.aborted) throw aborted();
     if (response == null) {
-      await sleep(hitl.pollIntervalMs);
+      await pause(hitl.pollIntervalMs);
       continue;
     }
 
@@ -607,7 +651,7 @@ async function pollHookApproval(
     // of that same poll loop and had the identical bug.
     const rawVerdict = response.arm ?? response.verdict ?? response.action;
     if (typeof rawVerdict !== 'string' || rawVerdict.trim() === '') {
-      await sleep(hitl.pollIntervalMs);
+      await pause(hitl.pollIntervalMs);
       continue;
     }
 
@@ -618,7 +662,7 @@ async function pollHookApproval(
       throw abortAndThrow(activityId, formatActivityRejectedMessage(response.reason));
     }
 
-    await sleep(hitl.pollIntervalMs);
+    await pause(hitl.pollIntervalMs);
   }
 
   throw abortAndThrow(

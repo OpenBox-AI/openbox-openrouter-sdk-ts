@@ -1,0 +1,14 @@
+{
+  "name": "wrong-http-method",
+  "description": "htm says GET while the request is a POST.",
+  "based_on": "evaluate",
+  "method": "POST",
+  "path": "/api/v2/governance/evaluate",
+  "api_key": "obx_test_fixture0000000000000000000000000",
+  "body_base64": "eyJzZXNzaW9uX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBhIiwiZXZlbnRfdHlwZSI6IkFjdGl2aXR5U3RhcnRlZCJ9",
+  "assertion": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImZpeHR1cmUtb2t0YS1jcmVkZW50aWFsLWtpZC0wMDAxIiwidHlwIjoib3BlbmJveC1hZ2VudC1wcm9vZitqd3QifQ.eyJhdWQiOiJ1cm46b3BlbmJveDpmaXh0dXJlLWRlcGxveW1lbnQ6Y29yZSIsImJvZHlfc2hhMjU2IjoiMTZkMDE3OTg1YjY2YWUwYTgyNDYyNWRhNGJiMjY1NTI4ZTk4OTQwODY3Zjc3ZmVlZWZhOTQ4OTFlMmQxYWJkZSIsImV4cCI6MTc4NTMyMTA2MCwiaHRtIjoiR0VUIiwiaHR1IjoiL2FwaS92Mi9nb3Zlcm5hbmNlL2V2YWx1YXRlIiwiaWF0IjoxNzg1MzIxMDAwLCJpc3MiOiJmaXh0dXJlLW9rdGEtYWktYWdlbnQtMDAwMSIsImp0aSI6ImZpeHR1cmUtanRpLXRhbXBlciIsIm9ieF9hZ2VudF9pZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMiIsIm9ieF9hcGlfa2V5X3NoYTI1NiI6IjExMDMwOWEwY2Q3MTU3MTcxZDM5NTlkM2I0OTQ1MGY2NDI3MDljODUxN2JlM2E3N2QyZTVkMmQ1MmE0Y2U5NzciLCJvYnhfZGVwbG95bWVudF9pZCI6ImZpeHR1cmUtZGVwbG95bWVudCIsIm9ieF9vcmdhbml6YXRpb25faWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJzdWIiOiJmaXh0dXJlLW9rdGEtYWktYWdlbnQtMDAwMSJ9.iUqDG0RU9LaaR8gysY8s-YylKSlZLHsQk8Zc6H46TNi_si84eeDJ-EAe2H-Dtte8EqER2ObYbb1QAjZ3IN3xwhnB7csBUsG6I4fR_FvBfFqMDV9gXy8rXKj9PhOOSoVOGM0NmiIWN-JkGX9wPCeMbQv9u90-4mYQt2-nPZb8U6CnsKp4HppIdV0BuxpiP96NH-6lZeKuZO3pOflIAyaSYJBwSYR0S-lU0xWBzxTYWA2g0w6BuuyIS-G7Joor2AQ-dSnXjNmeXA5SsRnYJ8QQKTVqYOqHShW5iGajjHIws1-58Zds73WoufzsUwLP09vAzkaHapclIU1EfKbAKSc8Kw",
+  "expect": {
+    "valid": false,
+    "reason_code": "binding_invalid"
+  }
+}

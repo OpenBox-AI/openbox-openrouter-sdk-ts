@@ -1,0 +1,14 @@
+{
+  "name": "wrong-typ",
+  "description": "typ is the generic JWT type instead of openbox-agent-proof+jwt.",
+  "based_on": "evaluate",
+  "method": "POST",
+  "path": "/api/v2/governance/evaluate",
+  "api_key": "obx_test_fixture0000000000000000000000000",
+  "body_base64": "eyJzZXNzaW9uX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBhIiwiZXZlbnRfdHlwZSI6IkFjdGl2aXR5U3RhcnRlZCJ9",
+  "assertion": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImZpeHR1cmUtb2t0YS1jcmVkZW50aWFsLWtpZC0wMDAxIiwidHlwIjoiSldUIn0.eyJhdWQiOiJ1cm46b3BlbmJveDpmaXh0dXJlLWRlcGxveW1lbnQ6Y29yZSIsImJvZHlfc2hhMjU2IjoiMTZkMDE3OTg1YjY2YWUwYTgyNDYyNWRhNGJiMjY1NTI4ZTk4OTQwODY3Zjc3ZmVlZWZhOTQ4OTFlMmQxYWJkZSIsImV4cCI6MTc4NTMyMTA2MCwiaHRtIjoiUE9TVCIsImh0dSI6Ii9hcGkvdjIvZ292ZXJuYW5jZS9ldmFsdWF0ZSIsImlhdCI6MTc4NTMyMTAwMCwiaXNzIjoiZml4dHVyZS1va3RhLWFpLWFnZW50LTAwMDEiLCJqdGkiOiJmaXh0dXJlLWp0aS10YW1wZXIiLCJvYnhfYWdlbnRfaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJvYnhfYXBpX2tleV9zaGEyNTYiOiIxMTAzMDlhMGNkNzE1NzE3MWQzOTU5ZDNiNDk0NTBmNjQyNzA5Yzg1MTdiZTNhNzdkMmU1ZDJkNTJhNGNlOTc3Iiwib2J4X2RlcGxveW1lbnRfaWQiOiJmaXh0dXJlLWRlcGxveW1lbnQiLCJvYnhfb3JnYW5pemF0aW9uX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwic3ViIjoiZml4dHVyZS1va3RhLWFpLWFnZW50LTAwMDEifQ.crUX3mQuyAvhx6lRbjCcb5yHsYtXzU588aa4Vk36Fy1q8-qnqYGskjO-nCIp-gg8boVkaQrxaq29lSJmwI5Jf0cbmPtmxQ_Y16Xb_GWupI8i5C1_BNaGOfP5OuIEqUe0R760nlQATNu2DH4UJ-Ar-_UdB2tIHxP62Q8eSq4PAIVr3sdkSdluQc87LvzKGLJ-_RyM7DwihV6klmNCmboDsLOjon7Z5AB-yQOkMClLizLKj0zVXQ7GjXxsh4q3wbnYPIuKjHgrIk7sYPdg543APgfW23UGic3O2InmB9Cw32eGlOtFQJuOj7my3iOMIIhg3mNDWfYDtKKRPVmN0-EHyg",
+  "expect": {
+    "valid": false,
+    "reason_code": "assertion_typ_mismatch"
+  }
+}
