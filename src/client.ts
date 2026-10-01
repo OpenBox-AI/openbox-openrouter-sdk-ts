@@ -7,9 +7,10 @@
 
 import type { OpenBoxTransport } from './transport';
 import { SoftGovernanceError } from './transport';
+import { failsClosedOnOutage, type OnApiError } from './outage';
 import { GovernancePatch, GovernanceVerdictResponse, OpenBoxGovernanceEvent } from './types';
 
-export type OnApiError = 'fail_open' | 'fail_closed';
+export type { OnApiError } from './outage';
 
 /**
  * 
@@ -101,7 +102,7 @@ export class GovernanceClient {
         timeoutMs: this.timeoutMs,
       });
     } catch (err) {
-      if (err instanceof SoftGovernanceError && onApiError !== 'fail_closed') return null;
+      if (err instanceof SoftGovernanceError && !failsClosedOnOutage(onApiError, event)) return null;
       throw err;
     }
   }
@@ -138,6 +139,10 @@ export class GovernanceClient {
       }
       return data;
     } catch (err) {
+      // A failed poll is "still pending" except under fail_closed. Under
+      // fail_closed_destructive it is retried, as in the base SDK: the held
+      // operation has not run and keeps waiting, so polling again never lets a
+      // write through.
       if (err instanceof SoftGovernanceError && onApiError !== 'fail_closed') return null;
       throw err;
     }
