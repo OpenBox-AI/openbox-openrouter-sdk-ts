@@ -11,6 +11,7 @@
  *     SDK exposes no pre-model hook — see openrouter.ts).
  */
 
+import { envNumber, envString } from './env';
 import type { OpenBoxCredentials, OpenBoxTransport } from './transport';
 
 export type DatabaseDriverName = 'pg' | 'mysql2' | 'mongodb' | 'redis' | 'ioredis';
@@ -141,13 +142,6 @@ export interface GovernanceConfig {
   logger: Logger;
 }
 
-function envNumber(name: string): number | undefined {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : undefined;
-}
-
 /**
  * Default HITL max wait — 1 hour, comfortably above the typical server-side
  * approval expiry (~30 min).
@@ -191,11 +185,11 @@ export function mergeConfig(opts: OpenBoxOpenRouterOptions): GovernanceConfig {
     spanConcurrency:
       opts.spanConcurrency ?? envNumber('OPENBOX_SPAN_CONCURRENCY') ?? 4,
     attestRouting:
-      opts.attestRouting ?? process.env.OPENBOX_ATTEST_ROUTING !== 'false',
+      opts.attestRouting ?? envString('OPENBOX_ATTEST_ROUTING') !== 'false',
     preflightRouting:
-      opts.preflightRouting ?? process.env.OPENBOX_PREFLIGHT_ROUTING !== 'false',
+      opts.preflightRouting ?? envString('OPENBOX_PREFLIGHT_ROUTING') !== 'false',
     openrouterApiKey:
-      opts.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? null,
+      opts.openrouterApiKey ?? envString('OPENROUTER_API_KEY') ?? null,
     instrumentFileIo: opts.instrumentFileIo ?? false,
     instrumentDatabases: opts.instrumentDatabases ?? true,
     databases,

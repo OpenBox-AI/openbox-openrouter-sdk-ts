@@ -9,6 +9,7 @@
  * crashing on transient network faults.
  */
 
+import { envString } from './env';
 import { buildSignedHeaders, serializeBody } from './signing';
 
 const OPENBOX_TIMEOUT_MS = 35_000;
@@ -79,19 +80,19 @@ export const DEFAULT_OPENBOX_URL = 'https://core.openbox.ai';
  * OPENBOX_* environment variables.
  */
 export function resolveCredentials(partial: Partial<OpenBoxCredentials> = {}): OpenBoxCredentials {
-  const env = process.env;
-  const apiKey = partial.apiKey ?? env.OPENBOX_API_KEY;
+  const apiKey = partial.apiKey ?? envString('OPENBOX_API_KEY');
   if (!apiKey) {
     throw new Error(
       'OpenBox API key not set. Pass `apiKey` or set OPENBOX_API_KEY.',
     );
   }
-  const url = partial.openboxUrl ?? env.OPENBOX_API_URL ?? env.OPENBOX_URL ?? DEFAULT_OPENBOX_URL;
+  const url =
+    partial.openboxUrl ?? envString('OPENBOX_API_URL') ?? envString('OPENBOX_URL') ?? DEFAULT_OPENBOX_URL;
   return {
     openboxUrl: url.replace(/\/+$/, ''),
     apiKey,
-    agentDid: partial.agentDid ?? env.OPENBOX_AGENT_DID,
-    agentPrivateKey: partial.agentPrivateKey ?? env.OPENBOX_AGENT_PRIVATE_KEY,
+    agentDid: partial.agentDid ?? envString('OPENBOX_AGENT_DID'),
+    agentPrivateKey: partial.agentPrivateKey ?? envString('OPENBOX_AGENT_PRIVATE_KEY'),
   };
 }
 
