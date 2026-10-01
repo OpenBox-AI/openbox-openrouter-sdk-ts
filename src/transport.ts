@@ -4,6 +4,7 @@
  *
  * Error taxonomy:
  *   - 401/403             → GovernanceAuthError, ALWAYS hard-fails
+ *   - a redirect          → SoftGovernanceError, never followed (see below)
  *   - anything else       → SoftGovernanceError, subject to `onApiError`
  * Nothing else may escape `request()`, or a fail-open deployment would start
  * crashing on transient network faults.
@@ -146,6 +147,11 @@ export class FetchTransport implements OpenBoxTransport {
         // onto a pooled ArrayBuffer, and `fetch` would read the whole pool.
         body: bodyBytes.length > 0 ? new Uint8Array(bodyBytes) : undefined,
         signal: controller.signal,
+        // Never follow a redirect. On a cross-origin redirect `fetch` drops
+        // `Authorization` but re-sends every custom header, so following one
+        // would hand the X-OpenBox-* signing headers to the redirect target —
+        // and its body would then be read as Core's governance answer.
+        redirect: 'manual',
         // Marks our own governance traffic so the fetch patch in
         // span_processor can skip it without a URL-prefix match.
         ...({ [OPENBOX_INTERNAL_REQUEST]: true } as Record<string, unknown>),
@@ -154,6 +160,18 @@ export class FetchTransport implements OpenBoxTransport {
       throw new SoftGovernanceError(err instanceof Error ? err.message : String(err), err);
     } finally {
       clearTimeout(timer);
+    }
+
+    // `redirect: 'manual'` surfaces the 3xx itself in Node, and an opaque
+    // status-0 response in a browser-like runtime. Either way it is not an
+    // answer from Core.
+    if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+      await response.body?.cancel().catch(() => undefined);
+      const location = response.headers.get('location');
+      throw new SoftGovernanceError(
+        `OpenBox governance request was redirected (${response.status}${location ? ` to ${location}` : ''}); redirects are not followed — check the OpenBox URL`,
+        null,
+      );
     }
 
     const text = await response.text().catch(() => '');
