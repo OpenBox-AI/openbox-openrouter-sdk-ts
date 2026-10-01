@@ -92,3 +92,33 @@ export class OpenBoxWorkloadAuthError extends GovernanceAuthError {
     this.reasonCode = details.reasonCode ?? null;
   }
 }
+
+/**
+ * Okta v2 identity bootstrap could not complete — Core unreachable, or it
+ * answered `GET /api/v2/auth/bootstrap` with an error. A `GovernanceAuthError`,
+ * so it fails closed under every `onApiError`: the SDK never falls back to an
+ * unsigned or v1 request.
+ */
+export class OpenBoxIdentityBootstrapError extends GovernanceAuthError {
+  readonly reasonCode: string | null;
+
+  constructor(message: string, httpStatus: number | null, reasonCode: string | null = null) {
+    super(message, httpStatus ?? 0, null);
+    this.name = 'OpenBoxIdentityBootstrapError';
+    this.reasonCode = reasonCode;
+  }
+}
+
+/**
+ * Core rejected a v2 (`X-OpenBox-Agent-Assertion`) request. Carries Core's
+ * machine reason code and actionable guidance for it.
+ */
+export class OpenBoxAssertionError extends GovernanceAuthError {
+  readonly reasonCode: string | null;
+
+  constructor(message: string, statusCode: number, reasonCode: string | null) {
+    super(message, statusCode, null);
+    this.name = 'OpenBoxAssertionError';
+    this.reasonCode = reasonCode;
+  }
+}

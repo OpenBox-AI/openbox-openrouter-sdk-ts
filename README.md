@@ -578,10 +578,54 @@ then an error instead of a silent fall back to unsigned mode.
 |---|---|---|
 | unsigned | `apiKey` only | `/api/v1/*` |
 | `openbox_did` | `agentDid` + `agentPrivateKey` (Ed25519 seed) | `/api/v1/*`, signed |
+| `okta_ai_agent` | `oktaAgentPrivateKey` (RSA PKCS8 PEM) | `/api/v2/*`, with an assertion |
 | `keycloak_workload` (IAM v3) | `workloadPrivateKey` (RSA PKCS8 PEM) | `/api/v3/*` |
 
 Settings for different methods cannot be mixed; a configuration that mixes
 them is rejected at construction, naming the offending settings.
+
+### Okta AI Agent identity
+
+An agent verified against an Okta AI Agent credential signs every request
+with a one-minute RS256 assertion in `X-OpenBox-Agent-Assertion`. The only
+local setting is the credential's private key:
+
+```dotenv
+OPENBOX_API_URL=https://core.example.com
+OPENBOX_API_KEY=obx_live_...
+OPENBOX_OKTA_AGENT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----
+...
+-----END PRIVATE KEY-----"
+```
+
+On first use the SDK fetches the rest — agent, organization and deployment
+ids, assertion audience, the Okta agent id, the credential `kid` — from
+`GET /api/v2/auth/bootstrap`, authenticated by the API key alone, and keeps it
+for the life of the process. Before signing anything it compares its key's
+RFC 7638 thumbprint with the one Core reports for the selected credential; a
+mismatch fails immediately ("The configured private key does not match the
+selected Okta credential…") rather than sending assertions Core can only
+reject. Governance requests then go to `/api/v2/*`; v1 DID headers are never
+sent alongside an assertion.
+
+- **It never falls back.** Core unreachable, a bootstrap `404` (Core without
+  bootstrap) or any other bootstrap error throws
+  `OpenBoxIdentityBootstrapError`; a malformed document or a key mismatch
+  throws `OpenBoxIdentityConfigError`. Both hard-fail under every
+  `onApiError`. A rejected assertion throws `OpenBoxAssertionError` with
+  Core's reason code and what to do about it.
+- **Rotation.** `refreshIdentityMetadata()` on the transport drops the current
+  identity first, then bootstraps again. The SDK never refreshes on its own
+  after an auth failure: a rotated credential may need a key this process
+  does not hold, and a silent retry would hide that.
+- **Explicit configuration** (`oktaAgentId`, `oktaAgentKeyId`, `agentId`,
+  `organizationId`, `deploymentId`, `agentProofAudience`, all set) still
+  works and skips bootstrap. Setting only some of them is rejected, naming
+  them, rather than merging stale local values over Core's.
+- The key must be an RSA key of at least 2048 bits.
+
+Assertions are byte-identical to openbox-core's golden fixtures for the same
+inputs (`test/okta-assertion-parity.test.ts`).
 
 ### Keycloak workload identity (IAM v3)
 
