@@ -1,8 +1,8 @@
 /**
  * Demo: a customer-support agent built on `@openrouter/agent`, governed by
- * OpenBox through `@openbox-ai/openbox-openrouter-governance` (linked as a local `file:..`
- * dependency, so this exercises the published package surface — not the
- * SDK's internals).
+ * OpenBox through `@openbox-ai/openbox-openrouter-governance`, installed from
+ * npm like any consumer would, so this exercises the published package surface
+ * — not the SDK's internals.
  *
  * Three tools, deliberately different in kind:
  *   - `lookup_order`   plain read, expected to sail through
