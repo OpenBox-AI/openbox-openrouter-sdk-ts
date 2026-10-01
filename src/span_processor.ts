@@ -37,7 +37,7 @@ import {
   type OpenBoxTransport,
 } from './transport';
 import { safeString } from './error-info';
-import { GovernanceClient, OnApiError } from './client';
+import { GovernanceClient, OnApiError, missingApprovalIds } from './client';
 import type { HITLConfig, Logger } from './config';
 import { rfc3339Now, stableSpanId, GovernanceVerdictResponse } from './types';
 import { GovernanceBlockedError, GovernanceHaltError, formatActivityRejectedMessage, verdictFromString } from './verdict';
@@ -577,6 +577,18 @@ async function pollHookApproval(
   const { hitl } = entry;
   if (!hitl.enabled) {
     throw abortAndThrow(activityId, `Approval required for activity ${activityType}`);
+  }
+
+  const missing = missingApprovalIds({
+    workflowId: entry.ctx.workflow_id,
+    runId: entry.ctx.run_id,
+    activityId,
+  });
+  if (missing.length > 0) {
+    throw abortAndThrow(
+      activityId,
+      `Approval required for activity ${activityType}, but the approval cannot be polled (missing ${missing.join(', ')}) — not running it`,
+    );
   }
 
   const client = new GovernanceClient(entry.transport, entry.traceId, entry.requestTimeoutMs);

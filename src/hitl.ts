@@ -1,5 +1,6 @@
 import type { OpenBoxOpenRouterMiddleware } from './middleware';
 import type { Turn } from './hooks';
+import { missingApprovalIds } from './client';
 import {
   GovernanceHaltError,
   formatActivityRejectedMessage,
@@ -25,6 +26,17 @@ export async function pollApprovalOrHalt(
 ): Promise<void> {
   if (!mw._config.hitl.enabled) {
     throw new GovernanceHaltError(`Approval required for activity ${activityType}`);
+  }
+
+  const missing = missingApprovalIds({
+    workflowId: turn.workflowId,
+    runId: turn.runId,
+    activityId,
+  });
+  if (missing.length > 0) {
+    throw new GovernanceHaltError(
+      `Approval required for activity ${activityType}, but the approval cannot be polled (missing ${missing.join(', ')}) — not running it`,
+    );
   }
 
   const timeoutMs = mw._config.hitl.timeoutMs;

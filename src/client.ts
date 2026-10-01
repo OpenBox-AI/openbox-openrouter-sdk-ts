@@ -59,6 +59,23 @@ export interface ApprovalPollResponse {
   [key: string]: unknown;
 }
 
+/**
+ * The approval correlation ids that are missing. Core's approval poll is keyed
+ * on all three; a poll with any of them empty can never match, so callers fail
+ * safe (the operation does not run) instead of polling.
+ */
+export function missingApprovalIds(ids: {
+  workflowId?: string | null;
+  runId?: string | null;
+  activityId?: string | null;
+}): string[] {
+  const missing: string[] = [];
+  if (!ids.workflowId) missing.push('workflow_id');
+  if (!ids.runId) missing.push('run_id');
+  if (!ids.activityId) missing.push('activity_id');
+  return missing;
+}
+
 export class GovernanceClient {
   private traceId: string;
   private readonly timeoutMs?: number;
@@ -106,21 +123,23 @@ export class GovernanceClient {
     }
   }
 
-  /** poll_approval() — POST the HITL poll payload to Core. */
+  /**
+   * poll_approval() — POST the HITL poll payload to Core.
+   *
+   * Core finds a pending approval by (workflow_id, run_id, activity_id) and
+   * nothing else. `approvalId` is response metadata only: it is accepted so
+   * existing callers keep compiling, and is never used as the poll key —
+   * sending it in place of the three ids matches no pending approval, so the
+   * wait would never resolve.
+   */
   async pollApproval(
     workflowId: string,
     runId: string,
     activityId: string,
-    approvalId?: string,
+    _approvalId?: string,
     onApiError: OnApiError = 'fail_open',
   ): Promise<ApprovalPollResponse | null> {
-    // If Core returned an approval_id in the evaluate response, use it as the
-    // poll key (Core returns it on the verdict). Otherwise
-    // fall back to the triple (workflow_id, run_id, activity_id).
-    const pollKey = approvalId ?? activityId;
-    const reqBody = approvalId
-      ? { workflow_id: pollKey, run_id: pollKey, activity_id: pollKey }
-      : { workflow_id: workflowId, run_id: runId, activity_id: activityId };
+    const reqBody = { workflow_id: workflowId, run_id: runId, activity_id: activityId };
     try {
       const data = await this.transport.request<ApprovalPollResponse>({
         method: 'POST',
