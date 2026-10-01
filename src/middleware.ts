@@ -81,6 +81,7 @@ export class OpenBoxOpenRouterMiddleware {
     setRoutingAttestation({
       enabled: this._config.attestRouting,
       apiKey: this._config.openrouterApiKey,
+      timeoutMs: this._config.provenanceTimeoutMs,
     });
     setupSpanProcessorInstrumentation({ http: this._config.instrumentHttp });
 
