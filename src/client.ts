@@ -138,6 +138,7 @@ export class GovernanceClient {
     activityId: string,
     _approvalId?: string,
     onApiError: OnApiError = 'fail_open',
+    signal?: AbortSignal,
   ): Promise<ApprovalPollResponse | null> {
     const reqBody = { workflow_id: workflowId, run_id: runId, activity_id: activityId };
     try {
@@ -147,6 +148,7 @@ export class GovernanceClient {
         body: reqBody,
         traceId: this.traceId,
         timeoutMs: this.timeoutMs,
+        signal,
       });
       const expiration = data.approval_expiration_time ?? data.approvalExpirationTime;
       if (typeof expiration === 'string' && expiration.trim()) {

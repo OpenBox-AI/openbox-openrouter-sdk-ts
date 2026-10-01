@@ -113,6 +113,12 @@ export interface HITLConfig {
   pollIntervalMs: number;
   /** null = poll indefinitely (matches the SDK's explicit opt-out). */
   timeoutMs: number | null;
+  /**
+   * Ends an in-progress approval wait — on shutdown, say. An aborted wait
+   * fails safe: the held operation does not run. The in-flight poll request
+   * is cancelled too.
+   */
+  abortSignal?: AbortSignal;
 }
 
 export interface GovernanceConfig {
@@ -176,6 +182,7 @@ export function mergeConfig(opts: OpenBoxOpenRouterOptions): GovernanceConfig {
         opts.hitl?.timeoutMs !== undefined
           ? opts.hitl.timeoutMs
           : envNumber('OPENBOX_HITL_TIMEOUT_MS') ?? DEFAULT_APPROVAL_MAX_WAIT_MS,
+      abortSignal: opts.hitl?.abortSignal,
     },
     // HTTP instrumentation is always on (HTTP is the transport every provider call
     // uses). File IO is off — file reads are almost always
