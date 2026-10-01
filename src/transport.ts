@@ -11,7 +11,28 @@
  */
 
 import { envString } from './env';
-import { GovernanceAuthError, SoftGovernanceError } from './errors';
+import {
+  GovernanceAuthError,
+  GovernanceContractError,
+  OpenBoxIdentityConfigError,
+  OpenBoxWorkloadAuthError,
+  SoftGovernanceError,
+} from './errors';
+import {
+  AGENT_IDENTITY_METHODS,
+  type AgentIdentityMethod,
+  type IdentityFields,
+  type ResolvedIdentityMethod,
+  describeMutualExclusionConflict,
+  describeWorkloadConflict,
+  resolveIdentityMethod,
+  resolveWorkloadPrivateKey,
+} from './identity/identity-resolution';
+import { anySignal, timeoutSignal } from './identity/signals';
+import { WORKLOAD_TOKEN_HEADER } from './identity/workload-assertion';
+import { WorkloadAuthenticator, type WorkloadAuthState } from './identity/workload-authenticator';
+import { CORE_REASON_KEYS, reasonCodeFrom } from './identity/workload-http';
+import { validateUrlSecurity } from './identity/url-security';
 import { buildSignedHeaders, serializeBody } from './signing';
 
 const OPENBOX_TIMEOUT_MS = 35_000;
@@ -24,6 +45,25 @@ export interface OpenBoxCredentials {
   agentDid?: string;
   /** Base64 raw 32-byte Ed25519 seed. Omit for unsigned mode. */
   agentPrivateKey?: string;
+  /**
+   * Which identity the agent presents to Core. Inferred when omitted: DID
+   * fields select `openbox_did`, a workload key selects `keycloak_workload`,
+   * and nothing selects unsigned API-key mode. Set it explicitly
+   * (`OPENBOX_AGENT_IDENTITY_METHOD`) so a missing key is an error rather than
+   * a silent fall back to unsigned mode.
+   */
+  identityMethod?: AgentIdentityMethod;
+  /**
+   * PKCS8 PEM RSA private key of the agent's IAM v3 service account
+   * (`OPENBOX_WORKLOAD_PRIVATE_KEY`). Selects `keycloak_workload`: every other
+   * workload setting comes from Core's `/api/v3/auth/bootstrap`.
+   */
+  workloadPrivateKey?: string;
+}
+
+/** Credentials after identity resolution: exactly one method, and only its inputs. */
+export interface ResolvedCredentials extends OpenBoxCredentials {
+  readonly resolvedIdentityMethod: ResolvedIdentityMethod;
 }
 
 export interface OpenBoxRequestOptions {
@@ -56,7 +96,7 @@ export const DEFAULT_OPENBOX_URL = 'https://core.openbox.ai';
  * Resolve credentials from explicit options, falling back to the standard
  * OPENBOX_* environment variables.
  */
-export function resolveCredentials(partial: Partial<OpenBoxCredentials> = {}): OpenBoxCredentials {
+export function resolveCredentials(partial: Partial<OpenBoxCredentials> = {}): ResolvedCredentials {
   const apiKey = partial.apiKey ?? envString('OPENBOX_API_KEY');
   if (!apiKey) {
     throw new Error(
@@ -65,13 +105,85 @@ export function resolveCredentials(partial: Partial<OpenBoxCredentials> = {}): O
   }
   const url =
     partial.openboxUrl ?? envString('OPENBOX_API_URL') ?? envString('OPENBOX_URL') ?? DEFAULT_OPENBOX_URL;
+  const openboxUrl = url.replace(/\/+$/, '');
+
+  const fields = identityFields(partial);
+  const conflict = describeWorkloadConflict(fields) ?? describeMutualExclusionConflict(fields);
+  if (conflict) throw new OpenBoxIdentityConfigError(conflict);
+
+  const method = resolveIdentityMethod(fields);
+  switch (method) {
+    case 'keycloak_workload': {
+      const workloadPrivateKey = resolveWorkloadPrivateKey(fields);
+      if (!workloadPrivateKey) {
+        throw new OpenBoxIdentityConfigError(
+          "identityMethod is 'keycloak_workload' but no workload private key is configured: set workloadPrivateKey (OPENBOX_WORKLOAD_PRIVATE_KEY).",
+        );
+      }
+      // A reusable workload token (and the API key) must never travel in cleartext.
+      validateUrlSecurity(openboxUrl);
+      return { openboxUrl, apiKey, identityMethod: method, workloadPrivateKey, resolvedIdentityMethod: method };
+    }
+    case 'openbox_did': {
+      if (!fields.agentDid || !fields.agentPrivateKey) {
+        throw new OpenBoxIdentityConfigError(
+          "identityMethod is 'openbox_did' but agentDid (OPENBOX_AGENT_DID) and agentPrivateKey (OPENBOX_AGENT_PRIVATE_KEY) are not both set.",
+        );
+      }
+      return {
+        openboxUrl,
+        apiKey,
+        identityMethod: method,
+        agentDid: fields.agentDid,
+        agentPrivateKey: fields.agentPrivateKey,
+        resolvedIdentityMethod: method,
+      };
+    }
+    case 'okta_ai_agent':
+      throw new OpenBoxIdentityConfigError(
+        "identityMethod 'okta_ai_agent' is not supported by this version of the SDK.",
+      );
+    case 'legacy_unsigned':
+      return { openboxUrl, apiKey, resolvedIdentityMethod: method };
+  }
+}
+
+/** Identity settings from explicit options, falling back to the base SDK's env names. */
+function identityFields(partial: Partial<OpenBoxCredentials>): IdentityFields {
+  const rawMethod = partial.identityMethod ?? envString('OPENBOX_AGENT_IDENTITY_METHOD');
+  if (rawMethod !== undefined && !(AGENT_IDENTITY_METHODS as readonly string[]).includes(rawMethod)) {
+    throw new OpenBoxIdentityConfigError(
+      `identityMethod (OPENBOX_AGENT_IDENTITY_METHOD) must be one of ${AGENT_IDENTITY_METHODS.join(', ')}, got '${rawMethod}'.`,
+    );
+  }
   return {
-    openboxUrl: url.replace(/\/+$/, ''),
-    apiKey,
-    agentDid: partial.agentDid ?? envString('OPENBOX_AGENT_DID'),
-    agentPrivateKey: partial.agentPrivateKey ?? envString('OPENBOX_AGENT_PRIVATE_KEY'),
+    identityMethod: (rawMethod as AgentIdentityMethod | undefined) ?? null,
+    agentDid: partial.agentDid ?? envString('OPENBOX_AGENT_DID') ?? null,
+    agentPrivateKey: partial.agentPrivateKey ?? envString('OPENBOX_AGENT_PRIVATE_KEY') ?? null,
+    workloadPrivateKey: partial.workloadPrivateKey ?? envString('OPENBOX_WORKLOAD_PRIVATE_KEY') ?? null,
+    // Okta settings are read so a workload or DID configuration carrying
+    // leftovers from them is rejected rather than half-applied.
+    oktaAgentId: envString('OPENBOX_OKTA_AGENT_ID') ?? null,
+    oktaAgentKeyId: envString('OPENBOX_OKTA_AGENT_KEY_ID') ?? null,
+    oktaAgentPrivateKey: envString('OPENBOX_OKTA_AGENT_PRIVATE_KEY') ?? null,
+    oktaAgentAlgorithm: envString('OPENBOX_OKTA_AGENT_ALGORITHM') ?? null,
+    agentId: envString('OPENBOX_AGENT_ID') ?? null,
+    organizationId: envString('OPENBOX_ORGANIZATION_ID') ?? null,
+    deploymentId: envString('OPENBOX_DEPLOYMENT_ID') ?? null,
+    agentProofAudience: envString('OPENBOX_AGENT_PROOF_AUDIENCE') ?? null,
   };
 }
+
+/**
+ * The v1 Core routes this SDK calls, and their IAM v3 equivalents. A workload
+ * client sends ONLY to `/api/v3/*` — any other path is refused rather than
+ * sent to a v1 route with a workload token.
+ */
+const V3_ROUTES: Readonly<Record<string, string>> = {
+  '/api/v1/governance/evaluate': '/api/v3/governance/evaluate',
+  '/api/v1/governance/approval': '/api/v3/governance/approval',
+  '/api/v1/auth/validate': '/api/v3/auth/validate',
+};
 
 /**
  * `fetch`-backed transport. One instance per middleware; credentials are
@@ -81,9 +193,48 @@ export function resolveCredentials(partial: Partial<OpenBoxCredentials> = {}): O
  */
 export class FetchTransport implements OpenBoxTransport {
   private readonly credentials: OpenBoxCredentials;
+  /** IAM v3 workload authentication; non-null exactly when the method is `keycloak_workload`. */
+  private readonly workload: WorkloadAuthenticator | null;
+  private closed = false;
 
-  constructor(credentials: OpenBoxCredentials) {
+  constructor(credentials: OpenBoxCredentials, options: { logger?: { info?(message: string): void } } = {}) {
     this.credentials = credentials;
+    if (credentials.workloadPrivateKey !== undefined) {
+      validateUrlSecurity(credentials.openboxUrl);
+      if (credentials.agentDid || credentials.agentPrivateKey) {
+        throw new OpenBoxIdentityConfigError(
+          'A workload private key (keycloak_workload) cannot be combined with agentDid/agentPrivateKey (openbox_did); exactly one identity method is allowed.',
+        );
+      }
+      const info = options.logger?.info?.bind(options.logger);
+      // Parses and size-checks the key now: a bad key fails before any request.
+      this.workload = new WorkloadAuthenticator({
+        privateKeyPem: credentials.workloadPrivateKey,
+        apiUrl: credentials.openboxUrl,
+        coreHeaders: () => buildSignedHeaders('GET', '', Buffer.alloc(0), credentials.apiKey),
+        fetchImpl: (input, init) => fetch(input, init),
+        timeoutMs: OPENBOX_TIMEOUT_MS,
+        logger: { info: (message) => info?.(message) },
+        closedError: () => new OpenBoxIdentityConfigError('This OpenBox transport has been closed.'),
+      });
+    } else {
+      this.workload = null;
+    }
+  }
+
+  /** The identity contract every request uses: 3 for workload identity, else 1. Fixed at construction. */
+  get contractVersion(): 1 | 3 {
+    return this.workload !== null ? 3 : 1;
+  }
+
+  /**
+   * Drop the workload signer and cached token and abort an in-flight
+   * acquisition. Later requests are refused. Idempotent.
+   */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.workload?.close();
   }
 
   get baseUrl(): string {
@@ -91,33 +242,53 @@ export class FetchTransport implements OpenBoxTransport {
   }
 
   async request<T = unknown>(options: OpenBoxRequestOptions): Promise<T> {
-    const url = `${this.credentials.openboxUrl}${options.path}`;
+    if (this.closed) throw new OpenBoxIdentityConfigError('This OpenBox transport has been closed.');
+    const workload = this.workload;
+
+    // A workload client is fixed to v3: it only ever talks to /api/v3/*.
+    let path = options.path;
+    if (workload !== null) {
+      const v3 = V3_ROUTES[path];
+      if (v3 === undefined) {
+        throw new GovernanceContractError(
+          `No IAM v3 route for ${path}; a workload-authenticated client never sends to a v1 route.`,
+        );
+      }
+      path = v3;
+    }
+    const url = `${this.credentials.openboxUrl}${path}`;
 
     // Serialize before signing so the bytes we hash are the bytes we send.
     const bodyBytes = serializeBody(options.body ?? null);
 
-    const headers = buildSignedHeaders(
-      options.method,
-      options.path,
-      bodyBytes,
-      this.credentials.apiKey,
-      this.credentials.agentDid,
-      this.credentials.agentPrivateKey,
-    );
+    // v3 sends the API key, SDK headers and the raw workload token — never DID
+    // signature headers. Acquisition failures throw here, before any request.
+    let workloadAuth: WorkloadAuthState | null = null;
+    let headers: Record<string, string>;
+    if (workload !== null) {
+      workloadAuth = await workload.get(options.signal);
+      headers = buildSignedHeaders(options.method, path, bodyBytes, this.credentials.apiKey);
+      headers[WORKLOAD_TOKEN_HEADER] = workloadAuth.accessToken();
+    } else {
+      headers = buildSignedHeaders(
+        options.method,
+        path,
+        bodyBytes,
+        this.credentials.apiKey,
+        this.credentials.agentDid,
+        this.credentials.agentPrivateKey,
+      );
+    }
     if (options.traceId) {
       headers['X-OpenBox-Trace-Id'] = options.traceId;
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(),
-      options.timeoutMs ?? OPENBOX_TIMEOUT_MS,
-    );
-    // Combined by hand rather than with AbortSignal.any, which Node 18 lacks.
-    const callerSignal = options.signal;
-    const onCallerAbort = () => controller.abort();
-    if (callerSignal?.aborted) controller.abort();
-    else callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
+    // The caller's signal, if any, is combined with the timeout by hand:
+    // Node 18 has no AbortSignal.any.
+    const { signal, dispose } = anySignal([
+      timeoutSignal(options.timeoutMs ?? OPENBOX_TIMEOUT_MS),
+      options.signal,
+    ]);
 
     let response: Response;
     try {
@@ -127,11 +298,12 @@ export class FetchTransport implements OpenBoxTransport {
         // `new Uint8Array(...)`, not the Buffer itself: a Buffer is a view
         // onto a pooled ArrayBuffer, and `fetch` would read the whole pool.
         body: bodyBytes.length > 0 ? new Uint8Array(bodyBytes) : undefined,
-        signal: controller.signal,
+        signal,
         // Never follow a redirect. On a cross-origin redirect `fetch` drops
         // `Authorization` but re-sends every custom header, so following one
-        // would hand the X-OpenBox-* signing headers to the redirect target —
-        // and its body would then be read as Core's governance answer.
+        // would hand the X-OpenBox-* signing headers (or the workload token)
+        // to the redirect target — and its body would then be read as Core's
+        // governance answer.
         redirect: 'manual',
         // Marks our own governance traffic so the fetch patch in
         // span_processor can skip it without a URL-prefix match.
@@ -140,8 +312,7 @@ export class FetchTransport implements OpenBoxTransport {
     } catch (err) {
       throw new SoftGovernanceError(err instanceof Error ? err.message : String(err), err);
     } finally {
-      clearTimeout(timer);
-      callerSignal?.removeEventListener('abort', onCallerAbort);
+      dispose();
     }
 
     // `redirect: 'manual'` surfaces the 3xx itself in Node, and an opaque
@@ -150,19 +321,40 @@ export class FetchTransport implements OpenBoxTransport {
     if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
       await response.body?.cancel().catch(() => undefined);
       const location = response.headers.get('location');
-      throw new SoftGovernanceError(
-        `OpenBox governance request was redirected (${response.status}${location ? ` to ${location}` : ''}); redirects are not followed — check the OpenBox URL`,
-        null,
-      );
+      const message = `OpenBox governance request was redirected (${response.status}${location ? ` to ${location}` : ''}); redirects are not followed — check the OpenBox URL`;
+      // On v3 a redirect is a contract error under every outage policy.
+      if (workload !== null) throw new GovernanceContractError(message);
+      throw new SoftGovernanceError(message, null);
     }
 
     const text = await response.text().catch(() => '');
 
     if (response.status === 401 || response.status === 403) {
+      if (workload !== null && workloadAuth !== null) {
+        // Discard exactly the token this request carried; the next request
+        // bootstraps again. The rejected request is not replayed. Core folds
+        // every identity failure into a generic 401, so no reason code is
+        // needed to decide this.
+        workload.invalidate(workloadAuth);
+        const reasonCode = reasonCodeFrom(text, CORE_REASON_KEYS);
+        const detail = reasonCode ? `HTTP ${response.status} ${reasonCode}` : `HTTP ${response.status}`;
+        throw new OpenBoxWorkloadAuthError(
+          `OpenBox Core rejected the workload-authenticated request to ${path} (${detail}). The cached workload token was discarded and the next request bootstraps again; check the agent's active workload identity if this persists.`,
+          { stage: 'runtime', httpStatus: response.status, reasonCode },
+        );
+      }
       throw new GovernanceAuthError(
         `OpenBox governance auth failed (${response.status}): ${text.slice(0, 500)}`,
         response.status,
         null,
+      );
+    }
+    // v3: a non-retryable 4xx (malformed payload, missing route) is a contract
+    // error, never an outage, so it never becomes "run ungoverned".
+    if (workload !== null && response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status)) {
+      const reasonCode = reasonCodeFrom(text, CORE_REASON_KEYS);
+      throw new GovernanceContractError(
+        `OpenBox Core rejected the v3 request to ${path} (HTTP ${response.status}${reasonCode ? ` ${reasonCode}` : ''}). This is a contract error, not an outage; check that the SDK and Core versions are compatible.`,
       );
     }
     if (!response.ok) {

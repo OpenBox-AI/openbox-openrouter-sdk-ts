@@ -1,0 +1,36 @@
+{
+  "name": "transition-proof",
+  "description": "Proof of possession for a prepared transition intent. Carries the three additional claims from contract §4.1.",
+  "method": "POST",
+  "path": "/api/v2/auth/transition-proof",
+  "api_key": "obx_test_fixture0000000000000000000000000",
+  "body_base64": "eyJ0cmFuc2l0aW9uX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAzIn0=",
+  "body_sha256": "db9d6da3d5362be77d80d2011da7c8b2affb169b2d54ba5093c428b7885a5172",
+  "header": {
+    "alg": "RS256",
+    "kid": "fixture-okta-credential-kid-0001",
+    "typ": "openbox-agent-proof+jwt"
+  },
+  "claims": {
+    "aud": "urn:openbox:fixture-deployment:core",
+    "body_sha256": "db9d6da3d5362be77d80d2011da7c8b2affb169b2d54ba5093c428b7885a5172",
+    "exp": 1785321060,
+    "htm": "POST",
+    "htu": "/api/v2/auth/transition-proof",
+    "iat": 1785321000,
+    "iss": "fixture-okta-ai-agent-0001",
+    "jti": "fixture-jti-0005",
+    "obx_agent_id": "00000000-0000-4000-8000-000000000002",
+    "obx_api_key_sha256": "110309a0cd7157171d3959d3b49450f642709c8517be3a77d2e5d2d52a4ce977",
+    "obx_deployment_id": "fixture-deployment",
+    "obx_organization_id": "00000000-0000-4000-8000-000000000001",
+    "obx_transition_challenge": "aGZ3TFJyc0VqVnFYMk5rUDdiWXVDdEFtOXdEc0ZnSHE",
+    "obx_transition_id": "00000000-0000-4000-8000-000000000003",
+    "obx_transition_purpose": "okta_ai_agent",
+    "sub": "fixture-okta-ai-agent-0001"
+  },
+  "assertion": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImZpeHR1cmUtb2t0YS1jcmVkZW50aWFsLWtpZC0wMDAxIiwidHlwIjoib3BlbmJveC1hZ2VudC1wcm9vZitqd3QifQ.eyJhdWQiOiJ1cm46b3BlbmJveDpmaXh0dXJlLWRlcGxveW1lbnQ6Y29yZSIsImJvZHlfc2hhMjU2IjoiZGI5ZDZkYTNkNTM2MmJlNzdkODBkMjAxMWRhN2M4YjJhZmZiMTY5YjJkNTRiYTUwOTNjNDI4Yjc4ODVhNTE3MiIsImV4cCI6MTc4NTMyMTA2MCwiaHRtIjoiUE9TVCIsImh0dSI6Ii9hcGkvdjIvYXV0aC90cmFuc2l0aW9uLXByb29mIiwiaWF0IjoxNzg1MzIxMDAwLCJpc3MiOiJmaXh0dXJlLW9rdGEtYWktYWdlbnQtMDAwMSIsImp0aSI6ImZpeHR1cmUtanRpLTAwMDUiLCJvYnhfYWdlbnRfaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJvYnhfYXBpX2tleV9zaGEyNTYiOiIxMTAzMDlhMGNkNzE1NzE3MWQzOTU5ZDNiNDk0NTBmNjQyNzA5Yzg1MTdiZTNhNzdkMmU1ZDJkNTJhNGNlOTc3Iiwib2J4X2RlcGxveW1lbnRfaWQiOiJmaXh0dXJlLWRlcGxveW1lbnQiLCJvYnhfb3JnYW5pemF0aW9uX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwib2J4X3RyYW5zaXRpb25fY2hhbGxlbmdlIjoiYUdaM1RGSnljMFZxVm5GWU1rNXJVRGRpV1hWRGRFRnRPWGRFYzBablNIRSIsIm9ieF90cmFuc2l0aW9uX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAzIiwib2J4X3RyYW5zaXRpb25fcHVycG9zZSI6Im9rdGFfYWlfYWdlbnQiLCJzdWIiOiJmaXh0dXJlLW9rdGEtYWktYWdlbnQtMDAwMSJ9.J5KX93kcQPHa1HZNASE51q8mHUElo61xAL7JTr0JO1ol593zWGC0CPIzZrrp6Wtgqr89R4Nrein3iZbU0KGzhWw7elwzWjrgi_isxw4vg4sLEv8MCgwE__KIWUizTAvcRIG8LcNvCecOxdp_3g9zBprRYcC1lGepdWVau6wTy5mmXZnvHl2VQzadeQPHSA4WoKsqN4P8zPRYvnYk-BksigT989Q03mcOzm3965eaM1bD23uWuSiVXmcMB3yfV4Nxv1rYPbybKnEAYAQVGVKfNZl3FyzzQy17oAvLdZ4qqn1YllvGv-ACmxEUtdpGLHRnqu5iwDaGFXzlM7ic_K_PQQ",
+  "expect": {
+    "valid": true
+  }
+}

@@ -20,9 +20,9 @@
 import { randomBytes, sign as cryptoSign, type KeyObject } from 'crypto';
 
 /** Header carrying the raw (un-prefixed) workload access token on v3 routes. */
-export const WORKLOAD_TOKEN_HEADER = "X-OpenBox-Workload-Token";
+export const WORKLOAD_TOKEN_HEADER = 'X-OpenBox-Workload-Token';
 /** RFC 7523 client-assertion type for the token-endpoint form. */
-export const CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+export const CLIENT_ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
 /** `exp - iat` of every client assertion. */
 export const CLIENT_ASSERTION_LIFETIME_SECONDS = 60;
 
@@ -40,7 +40,7 @@ export interface ClientAssertionOverrides {
 }
 
 function base64UrlJson(value: unknown): string {
-  return Buffer.from(JSON.stringify(value), "utf-8").toString("base64url");
+  return Buffer.from(JSON.stringify(value), 'utf-8').toString('base64url');
 }
 
 /**
@@ -50,19 +50,19 @@ function base64UrlJson(value: unknown): string {
 export function buildWorkloadClientAssertion(
   signer: KeyObject,
   target: ClientAssertionTarget,
-  overrides: ClientAssertionOverrides = {}
+  overrides: ClientAssertionOverrides = {},
 ): string {
   const iat = overrides.issuedAt ?? Math.floor(Date.now() / 1000);
-  const header = { alg: "RS256", kid: target.kid, typ: "JWT" };
+  const header = { alg: 'RS256', kid: target.kid, typ: 'JWT' };
   const claims = {
     aud: target.tokenEndpoint,
     exp: iat + CLIENT_ASSERTION_LIFETIME_SECONDS,
     iat,
     iss: target.clientId,
-    jti: overrides.jti ?? randomBytes(24).toString("base64url"),
-    sub: target.clientId
+    jti: overrides.jti ?? randomBytes(24).toString('base64url'),
+    sub: target.clientId,
   };
   const signingInput = `${base64UrlJson(header)}.${base64UrlJson(claims)}`;
-  const signature = cryptoSign("RSA-SHA256", Buffer.from(signingInput, "utf-8"), signer);
-  return `${signingInput}.${signature.toString("base64url")}`;
+  const signature = cryptoSign('RSA-SHA256', Buffer.from(signingInput, 'utf-8'), signer);
+  return `${signingInput}.${signature.toString('base64url')}`;
 }

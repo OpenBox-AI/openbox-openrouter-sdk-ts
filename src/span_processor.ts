@@ -36,6 +36,7 @@ import {
   SoftGovernanceError,
   type OpenBoxTransport,
 } from './transport';
+import { GovernanceContractError, OpenBoxIdentityConfigError } from './errors';
 import { safeString } from './error-info';
 import { GovernanceClient, OnApiError, missingApprovalIds } from './client';
 import { ApprovalWaitAbortedError, sleepUnlessAborted } from './wait';
@@ -377,8 +378,16 @@ async function evaluateHookSpan(
       entry.onBlocked?.(err);
       throw err;
     }
-    // Auth/signing failures always hard-fail, regardless of onApiError.
-    if (err instanceof GovernanceAuthError) throw err;
+    // Auth/signing failures always hard-fail, regardless of onApiError — and
+    // so do IAM v3 contract errors and identity misconfiguration, which are
+    // never outages.
+    if (
+      err instanceof GovernanceAuthError ||
+      err instanceof GovernanceContractError ||
+      err instanceof OpenBoxIdentityConfigError
+    ) {
+      throw err;
+    }
     // Other soft failures (network/API) respect the configured policy —
     // default fail_open so governance errors don't crash the model call.
     if (err instanceof SoftGovernanceError && entry.onApiError === 'fail_closed') throw err;

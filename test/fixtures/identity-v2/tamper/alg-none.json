@@ -1,0 +1,14 @@
+{
+  "name": "alg-none",
+  "description": "Unsigned token using alg=none.",
+  "based_on": "evaluate",
+  "method": "POST",
+  "path": "/api/v2/governance/evaluate",
+  "api_key": "obx_test_fixture0000000000000000000000000",
+  "body_base64": "eyJzZXNzaW9uX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBhIiwiZXZlbnRfdHlwZSI6IkFjdGl2aXR5U3RhcnRlZCJ9",
+  "assertion": "eyJhbGciOiJub25lIiwia2lkIjoiZml4dHVyZS1va3RhLWNyZWRlbnRpYWwta2lkLTAwMDEiLCJ0eXAiOiJvcGVuYm94LWFnZW50LXByb29mK2p3dCJ9.eyJhdWQiOiJ1cm46b3BlbmJveDpmaXh0dXJlLWRlcGxveW1lbnQ6Y29yZSIsImJvZHlfc2hhMjU2IjoiMTZkMDE3OTg1YjY2YWUwYTgyNDYyNWRhNGJiMjY1NTI4ZTk4OTQwODY3Zjc3ZmVlZWZhOTQ4OTFlMmQxYWJkZSIsImV4cCI6MTc4NTMyMTA2MCwiaHRtIjoiUE9TVCIsImh0dSI6Ii9hcGkvdjIvZ292ZXJuYW5jZS9ldmFsdWF0ZSIsImlhdCI6MTc4NTMyMTAwMCwiaXNzIjoiZml4dHVyZS1va3RhLWFpLWFnZW50LTAwMDEiLCJqdGkiOiJmaXh0dXJlLWp0aS10YW1wZXIiLCJvYnhfYWdlbnRfaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJvYnhfYXBpX2tleV9zaGEyNTYiOiIxMTAzMDlhMGNkNzE1NzE3MWQzOTU5ZDNiNDk0NTBmNjQyNzA5Yzg1MTdiZTNhNzdkMmU1ZDJkNTJhNGNlOTc3Iiwib2J4X2RlcGxveW1lbnRfaWQiOiJmaXh0dXJlLWRlcGxveW1lbnQiLCJvYnhfb3JnYW5pemF0aW9uX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwic3ViIjoiZml4dHVyZS1va3RhLWFpLWFnZW50LTAwMDEifQ.",
+  "expect": {
+    "valid": false,
+    "reason_code": "assertion_alg_rejected"
+  }
+}

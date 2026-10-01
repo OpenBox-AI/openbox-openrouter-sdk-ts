@@ -50,9 +50,9 @@ const client = new OpenRouter({ apiKey: process.env.OPENROUTER_API_KEY });
 
 const openbox = createOpenBoxGovernance({
   agentName: 'research-agent',
-  // apiKey / openboxUrl / agentDid / agentPrivateKey also read from
-  // OPENBOX_API_KEY, OPENBOX_API_URL, OPENBOX_AGENT_DID,
-  // OPENBOX_AGENT_PRIVATE_KEY.
+  // apiKey / openboxUrl and the agent identity are also read from
+  // OPENBOX_API_KEY, OPENBOX_API_URL and the identity variables — see
+  // "Agent identity" below.
 });
 
 const result = await openbox.callModel(callModel, client, {
@@ -564,6 +564,68 @@ requires cloning it, which leaves the caller's object in a state their retry
 logic cannot reuse. With it on, roughly a quarter of real runs died with
 `Cannot construct a Request with a Request object that has already been used`.
 Response bodies — where token counts live — are unaffected.
+
+---
+
+## Agent identity
+
+How the agent proves who it is to Core. Pick one method; the SDK infers it
+from what is configured, or you can name it with `identityMethod`
+(`OPENBOX_AGENT_IDENTITY_METHOD`). Naming it is recommended: a missing key is
+then an error instead of a silent fall back to unsigned mode.
+
+| Method | Configure | Requests go to |
+|---|---|---|
+| unsigned | `apiKey` only | `/api/v1/*` |
+| `openbox_did` | `agentDid` + `agentPrivateKey` (Ed25519 seed) | `/api/v1/*`, signed |
+| `keycloak_workload` (IAM v3) | `workloadPrivateKey` (RSA PKCS8 PEM) | `/api/v3/*` |
+
+Settings for different methods cannot be mixed; a configuration that mixes
+them is rejected at construction, naming the offending settings.
+
+### Keycloak workload identity (IAM v3)
+
+The API key still identifies the agent. A short-lived Keycloak token proves
+the agent's active service account, and the one extra secret the runtime needs
+is that service account's RSA private key:
+
+```dotenv
+OPENBOX_API_URL=https://core.example.com
+OPENBOX_API_KEY=obx_live_...
+OPENBOX_AGENT_IDENTITY_METHOD=keycloak_workload
+OPENBOX_WORKLOAD_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----
+...
+-----END PRIVATE KEY-----"
+```
+
+Everything else — token endpoint, issuer, audience, client id, key id, service
+account and activation — comes from Core's `GET /api/v3/auth/bootstrap`; there
+is no local setting for any of it. On first use the SDK fetches that document,
+signs a one-minute RS256 client assertion, exchanges it at Keycloak's token
+endpoint, and sends every governance request to `/api/v3/*` with the API key
+plus `X-OpenBox-Workload-Token`. No API key ever reaches Keycloak.
+
+- **It never falls back.** A bootstrap `404` (Core without v3), a `409
+  workload_identity_unavailable`, a Keycloak rejection, or Core or Keycloak
+  being unreachable during authentication throws `OpenBoxWorkloadAuthError`
+  under every `onApiError` — never a v1 or API-key-only request, and never
+  "run ungoverned". On v3 a redirect or a non-retryable 4xx is a
+  `GovernanceContractError`, which also hard-fails. A network failure or a
+  5xx *after* authentication is an ordinary outage and follows `onApiError`.
+- **Renewal.** A token is used for at most 300 s and renewed 30 s before it
+  expires; each renewal fetches bootstrap again, so a new activation is
+  picked up without a restart. Concurrent requests share one acquisition. A
+  `401`/`403` from Core discards the token, the rejected request is not
+  replayed, and the next request authenticates again.
+- **Okta-sourced agents** moved to workload authentication may keep their key
+  in `OPENBOX_OKTA_AGENT_PRIVATE_KEY`, but only with an explicit
+  `identityMethod: 'keycloak_workload'`. Both keys together are rejected.
+- The key must be an RSA key of at least 2048 bits. Core must be HTTPS (plain
+  HTTP only for `localhost`).
+
+The behaviour matches `@openbox-ai/openbox-sdk-ts` 2.0.0; the candidate-key
+proof for workload transitions (`proveWorkloadIdentityTransition`) is not
+part of this SDK yet.
 
 ---
 

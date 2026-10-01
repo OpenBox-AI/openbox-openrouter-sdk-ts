@@ -33,6 +33,18 @@ export class GovernanceAuthError extends Error {
 }
 
 /**
+ * Core answered, but not with anything the contract allows — on IAM v3, a
+ * redirect or a non-retryable 4xx. Never an outage: it hard-fails under every
+ * `onApiError`, so a broken contract can never become "run ungoverned".
+ */
+export class GovernanceContractError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GovernanceContractError';
+  }
+}
+
+/**
  * A local identity misconfiguration — a malformed or undersized key, or
  * identity settings that contradict each other. Raised before any request is
  * sent, and never subject to `onApiError`.

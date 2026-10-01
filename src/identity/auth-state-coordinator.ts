@@ -83,7 +83,9 @@ export class AuthStateCoordinator<T extends object> {
     this.#state = null;
     const flight = this.#flight;
     this.#flight = null;
-    flight?.controller.abort(new SupersededAcquisitionError("authentication acquisition superseded"));
+    flight?.controller.abort(
+      new SupersededAcquisitionError('authentication acquisition superseded'),
+    );
   }
 
   /** Idempotent: reject every current and future call and abort in-flight acquisition. */
@@ -144,8 +146,8 @@ export class AuthStateCoordinator<T extends object> {
         (error: unknown) => {
           if (this.#flight === flight) this.#flight = null;
           throw error;
-        }
-      )
+        },
+      ),
     };
     // Every waiter may have been aborted; never leave the shared rejection unhandled.
     flight.promise.catch(() => undefined);
@@ -162,20 +164,20 @@ function waitUnlessAborted<T>(promise: Promise<T>, signal: AbortSignal | undefin
     const onAbort = (): void => {
       reject(abortReason(signal));
     };
-    signal.addEventListener("abort", onAbort, { once: true });
+    signal.addEventListener('abort', onAbort, { once: true });
     promise.then(
       (value) => {
-        signal.removeEventListener("abort", onAbort);
+        signal.removeEventListener('abort', onAbort);
         resolve(value);
       },
       (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
+        signal.removeEventListener('abort', onAbort);
         reject(error instanceof Error ? error : new Error(String(error)));
-      }
+      },
     );
   });
 }
 
 function abortReason(signal: AbortSignal): Error {
-  return signal.reason instanceof Error ? signal.reason : new Error("operation aborted");
+  return signal.reason instanceof Error ? signal.reason : new Error('operation aborted');
 }

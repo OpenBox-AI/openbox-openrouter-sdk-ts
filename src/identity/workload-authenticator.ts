@@ -28,28 +28,28 @@ import {
   parseWorkloadBootstrapDocument,
   parseWorkloadTokenResponse,
   type WorkloadAccessTokenResponse,
-  type WorkloadBootstrapDocument
+  type WorkloadBootstrapDocument,
 } from './workload-documents';
 import {
   sendAuthenticationRequest,
   workloadBootstrapFailure,
   workloadTokenFailure,
-  type AuthenticationTransport
+  type AuthenticationTransport,
 } from './workload-http';
 
 /** `GET /api/v3/auth/bootstrap` — API-key-only, returns the active service-account metadata. */
-export const AUTH_BOOTSTRAP_PATH_V3 = "/api/v3/auth/bootstrap";
+export const AUTH_BOOTSTRAP_PATH_V3 = '/api/v3/auth/bootstrap';
 
 /** Metadata fields compared (by name only) to report an authority change. */
 const AUTHORITY_FIELDS = [
-  "issuer",
-  "tokenEndpoint",
-  "audience",
-  "clientId",
-  "kid",
-  "serviceAccountId",
-  "activationVersion",
-  "identitySource"
+  'issuer',
+  'tokenEndpoint',
+  'audience',
+  'clientId',
+  'kid',
+  'serviceAccountId',
+  'activationVersion',
+  'identitySource',
 ] as const;
 
 /**
@@ -91,7 +91,7 @@ export interface WorkloadAuthenticatorOptions {
 
 export class WorkloadAuthenticator {
   // Everything except the PEM: the key is kept only as the parsed signer, which close() drops.
-  readonly #options: Omit<WorkloadAuthenticatorOptions, "privateKeyPem">;
+  readonly #options: Omit<WorkloadAuthenticatorOptions, 'privateKeyPem'>;
   readonly #now: () => number;
   readonly #coordinator: AuthStateCoordinator<WorkloadAuthState>;
   #signer: KeyObject | null;
@@ -101,7 +101,7 @@ export class WorkloadAuthenticator {
   /** Parses and validates the key immediately: a bad key fails before any HTTP. */
   constructor(options: WorkloadAuthenticatorOptions) {
     const { privateKeyPem, ...rest } = options;
-    this.#signer = loadRsaPrivateKey(privateKeyPem, "workloadPrivateKey");
+    this.#signer = loadRsaPrivateKey(privateKeyPem, 'workloadPrivateKey');
     this.#options = rest;
     this.#now = options.now ?? (() => performance.now());
     this.#coordinator = new AuthStateCoordinator<WorkloadAuthState>({
@@ -110,7 +110,7 @@ export class WorkloadAuthenticator {
       closedError: options.closedError,
       onPublish: (state) => {
         this.#noteAuthority(state.metadata);
-      }
+      },
     });
   }
 
@@ -151,7 +151,7 @@ export class WorkloadAuthenticator {
     const transport: AuthenticationTransport = {
       fetchImpl: this.#options.fetchImpl,
       timeoutMs: this.#options.timeoutMs,
-      closeSignal: signal
+      closeSignal: signal,
     };
     const metadata = await this.#fetchBootstrap(transport);
     const signer = this.#signer;
@@ -161,12 +161,13 @@ export class WorkloadAuthenticator {
     // so its lifetime is never overestimated by the time the exchange took.
     const startedAt = this.#now();
     const token = await this.#exchangeToken(transport, signer, metadata);
-    const refreshAtMs = startedAt + (token.cacheSeconds - ACCESS_TOKEN_REFRESH_MARGIN_SECONDS) * 1000;
+    const refreshAtMs =
+      startedAt + (token.cacheSeconds - ACCESS_TOKEN_REFRESH_MARGIN_SECONDS) * 1000;
     if (this.#now() >= refreshAtMs) {
       throw new OpenBoxWorkloadAuthError(
         "The workload token exchange took longer than the token's usable lifetime " +
           `(expires_in minus the ${ACCESS_TOKEN_REFRESH_MARGIN_SECONDS}s refresh margin); no governed request was sent.`,
-        { stage: "token" }
+        { stage: 'token' },
       );
     }
     return new WorkloadAuthState(metadata, token.accessToken, refreshAtMs);
@@ -175,50 +176,57 @@ export class WorkloadAuthenticator {
   async #fetchBootstrap(transport: AuthenticationTransport): Promise<WorkloadBootstrapDocument> {
     const response = await sendAuthenticationRequest(
       transport,
-      "bootstrap",
+      'bootstrap',
       `${this.#options.apiUrl}${AUTH_BOOTSTRAP_PATH_V3}`,
-      { method: "GET", headers: { ...this.#options.coreHeaders(), Accept: "application/json" } },
+      { method: 'GET', headers: { ...this.#options.coreHeaders(), Accept: 'application/json' } },
       {
         target: "OpenBox Core's workload bootstrap endpoint",
         networkFailure: (detail) =>
-          `OpenBox Core could not be reached for workload bootstrap (${detail}); no governed request was sent.`
-      }
+          `OpenBox Core could not be reached for workload bootstrap (${detail}); no governed request was sent.`,
+      },
     );
     if (response.status !== 200) throw workloadBootstrapFailure(response.status, response.text);
-    return parseWorkloadBootstrapDocument(parseJsonBody(response.text, "Workload bootstrap response", "bootstrap"));
+    return parseWorkloadBootstrapDocument(
+      parseJsonBody(response.text, 'Workload bootstrap response', 'bootstrap'),
+    );
   }
 
   async #exchangeToken(
     transport: AuthenticationTransport,
     signer: KeyObject,
-    metadata: WorkloadBootstrapDocument
+    metadata: WorkloadBootstrapDocument,
   ): Promise<WorkloadAccessTokenResponse> {
     // Exactly these four fields: no scope/audience parameter (Backend's token
     // mappers set the access-token audience), and no OpenBox API key, workload
     // token, DID/Okta proof, or client secret ever reaches Keycloak.
     const body = new URLSearchParams([
-      ["grant_type", "client_credentials"],
-      ["client_id", metadata.clientId],
-      ["client_assertion_type", CLIENT_ASSERTION_TYPE],
-      ["client_assertion", buildWorkloadClientAssertion(signer, metadata)]
+      ['grant_type', 'client_credentials'],
+      ['client_id', metadata.clientId],
+      ['client_assertion_type', CLIENT_ASSERTION_TYPE],
+      ['client_assertion', buildWorkloadClientAssertion(signer, metadata)],
     ]).toString();
     const response = await sendAuthenticationRequest(
       transport,
-      "token",
+      'token',
       metadata.tokenEndpoint,
       {
-        method: "POST",
-        headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
-        body
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body,
       },
       {
         target: "Keycloak's token endpoint",
         networkFailure: (detail) =>
-          `Keycloak's token endpoint could not be reached (${detail}); no governed request was sent.`
-      }
+          `Keycloak's token endpoint could not be reached (${detail}); no governed request was sent.`,
+      },
     );
     if (response.status !== 200) throw workloadTokenFailure(response.status, response.text);
-    return parseWorkloadTokenResponse(parseJsonBody(response.text, "Keycloak workload token response", "token"));
+    return parseWorkloadTokenResponse(
+      parseJsonBody(response.text, 'Keycloak workload token response', 'token'),
+    );
   }
 
   /** On publish: log safe diagnostics on the first state and on any authority change (field names only). */
@@ -235,19 +243,19 @@ export class WorkloadAuthenticator {
     const changed = AUTHORITY_FIELDS.filter((field) => previous[field] !== metadata[field]);
     if (changed.length > 0) {
       this.#options.logger.info(
-        `OpenBox workload authority changed (${changed.join(", ")}); now ${summary}`
+        `OpenBox workload authority changed (${changed.join(', ')}); now ${summary}`,
       );
     }
   }
 }
 
-function parseJsonBody(text: string, what: string, stage: "bootstrap" | "token"): unknown {
+function parseJsonBody(text: string, what: string, stage: 'bootstrap' | 'token'): unknown {
   try {
     return JSON.parse(text);
   } catch {
     throw new OpenBoxWorkloadAuthError(`${what} is invalid: body is not valid JSON.`, {
       stage,
-      httpStatus: 200
+      httpStatus: 200,
     });
   }
 }

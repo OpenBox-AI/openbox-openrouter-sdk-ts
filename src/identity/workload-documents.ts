@@ -18,13 +18,13 @@ import { isLoopbackHostname } from './url-security';
 export const WORKLOAD_BOOTSTRAP_VERSION = 3;
 export const WORKLOAD_CONTRACT_VERSION = 3;
 /** Keycloak's token path relative to the realm issuer. */
-export const TOKEN_ENDPOINT_SUFFIX = "/protocol/openid-connect/token";
+export const TOKEN_ENDPOINT_SUFFIX = '/protocol/openid-connect/token';
 /** Renew this long before the cached expiry (Python parity). */
 export const ACCESS_TOKEN_REFRESH_MARGIN_SECONDS = 30;
 /** Never cache a token longer than this, whatever `expires_in` says (Python parity). */
 export const MAX_ACCESS_TOKEN_CACHE_SECONDS = 300;
 
-export const WORKLOAD_IDENTITY_SOURCES = ["openbox", "okta", "entra"] as const;
+export const WORKLOAD_IDENTITY_SOURCES = ['openbox', 'okta', 'entra'] as const;
 /** Where the workload identity comes from — metadata only, never an authentication switch. */
 export type WorkloadIdentitySource = (typeof WORKLOAD_IDENTITY_SOURCES)[number];
 
@@ -52,7 +52,7 @@ export interface WorkloadAccessTokenResponse {
 type Json = Record<string, unknown>;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 // A header-safe opaque token: visible ASCII only (JWTs are base64url segments and dots).
 const VISIBLE_ASCII = /^[\x21-\x7e]+$/;
 
@@ -62,7 +62,7 @@ const VISIBLE_ASCII = /^[\x21-\x7e]+$/;
  * `uuid.UUID` marshaling).
  */
 export function canonicalUuid(value: unknown): string | null {
-  return typeof value === "string" && UUID_PATTERN.test(value) ? value.toLowerCase() : null;
+  return typeof value === 'string' && UUID_PATTERN.test(value) ? value.toLowerCase() : null;
 }
 
 function fail(stage: WorkloadAuthStage, message: string): never {
@@ -70,7 +70,7 @@ function fail(stage: WorkloadAuthStage, message: string): never {
 }
 
 function requireObject(raw: unknown, what: string, stage: WorkloadAuthStage): Json {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     fail(stage, `${what} is invalid: expected a JSON object.`);
   }
   return raw as Json;
@@ -78,14 +78,14 @@ function requireObject(raw: unknown, what: string, stage: WorkloadAuthStage): Js
 
 function requireVersions(body: Json, what: string, stage: WorkloadAuthStage): void {
   for (const [key, expected] of [
-    ["bootstrap_version", WORKLOAD_BOOTSTRAP_VERSION],
-    ["contract_version", WORKLOAD_CONTRACT_VERSION]
+    ['bootstrap_version', WORKLOAD_BOOTSTRAP_VERSION],
+    ['contract_version', WORKLOAD_CONTRACT_VERSION],
   ] as const) {
     if (body[key] !== expected) {
       fail(
         stage,
         `Unsupported ${what} ${key} ${JSON.stringify(body[key])}; this SDK supports ${expected}. ` +
-          "Upgrade the OpenBox SDK to match your Core deployment."
+          'Upgrade the OpenBox SDK to match your Core deployment.',
       );
     }
   }
@@ -93,7 +93,7 @@ function requireVersions(body: Json, what: string, stage: WorkloadAuthStage): vo
 
 function requireString(body: Json, key: string, what: string, stage: WorkloadAuthStage): string {
   const value = body[key];
-  if (typeof value !== "string" || value.trim() === "") {
+  if (typeof value !== 'string' || value.trim() === '') {
     fail(stage, `${what} is invalid: '${key}' must be a non-empty string.`);
   }
   return value;
@@ -108,11 +108,11 @@ function requireUuid(body: Json, key: string, what: string, stage: WorkloadAuthS
 }
 
 function requireSource(body: Json, what: string, stage: WorkloadAuthStage): WorkloadIdentitySource {
-  const value = body["identity_source"];
+  const value = body['identity_source'];
   if (!(WORKLOAD_IDENTITY_SOURCES as readonly unknown[]).includes(value)) {
     fail(
       stage,
-      `${what} is invalid: 'identity_source' must be one of ${WORKLOAD_IDENTITY_SOURCES.join(", ")}.`
+      `${what} is invalid: 'identity_source' must be one of ${WORKLOAD_IDENTITY_SOURCES.join(', ')}.`,
     );
   }
   return value as WorkloadIdentitySource;
@@ -129,7 +129,7 @@ function requireSafeUrl(value: string, key: string, what: string, stage: Workloa
     fail(
       stage,
       `${what} is invalid: '${key}' must be an absolute HTTPS URL (HTTP only for localhost, 127.0.0.1, ` +
-        "or ::1) without user information, query, or fragment."
+        'or ::1) without user information, query, or fragment.',
     );
   // Checked on the raw string: URL parsing silently drops an empty `?`/`#` and trims whitespace.
   if (/[\s\\?#]/.test(value)) invalid();
@@ -141,26 +141,26 @@ function requireSafeUrl(value: string, key: string, what: string, stage: Workloa
   }
   if (url.username || url.password) invalid();
   const secure =
-    url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHostname(url.hostname));
+    url.protocol === 'https:' || (url.protocol === 'http:' && isLoopbackHostname(url.hostname));
   if (!secure || !url.hostname) invalid();
 }
 
 /** Core's own rule: the issuer, minus one trailing slash, plus the Keycloak token path. */
 function tokenEndpointFor(issuer: string): string {
-  return `${issuer.endsWith("/") ? issuer.slice(0, -1) : issuer}${TOKEN_ENDPOINT_SUFFIX}`;
+  return `${issuer.endsWith('/') ? issuer.slice(0, -1) : issuer}${TOKEN_ENDPOINT_SUFFIX}`;
 }
 
 /** Parse Core's active workload bootstrap document. */
 export function parseWorkloadBootstrapDocument(raw: unknown): WorkloadBootstrapDocument {
-  const stage = "bootstrap";
-  const what = "Workload bootstrap response";
+  const stage = 'bootstrap';
+  const what = 'Workload bootstrap response';
   const body = requireObject(raw, what, stage);
-  requireVersions(body, "workload bootstrap", stage);
+  requireVersions(body, 'workload bootstrap', stage);
 
-  const issuer = requireString(body, "issuer", what, stage);
-  const tokenEndpoint = requireString(body, "token_endpoint", what, stage);
-  requireSafeUrl(issuer, "issuer", what, stage);
-  requireSafeUrl(tokenEndpoint, "token_endpoint", what, stage);
+  const issuer = requireString(body, 'issuer', what, stage);
+  const tokenEndpoint = requireString(body, 'token_endpoint', what, stage);
+  requireSafeUrl(issuer, 'issuer', what, stage);
+  requireSafeUrl(tokenEndpoint, 'token_endpoint', what, stage);
   if (tokenEndpoint !== tokenEndpointFor(issuer)) {
     fail(stage, `${what} is invalid: 'token_endpoint' does not belong to the advertised issuer.`);
   }
@@ -170,39 +170,39 @@ export function parseWorkloadBootstrapDocument(raw: unknown): WorkloadBootstrapD
     contractVersion: WORKLOAD_CONTRACT_VERSION,
     tokenEndpoint,
     issuer,
-    audience: requireString(body, "audience", what, stage),
-    clientId: requireString(body, "client_id", what, stage),
-    serviceAccountId: requireUuid(body, "service_account_id", what, stage),
-    activationVersion: requireUuid(body, "activation_version", what, stage),
+    audience: requireString(body, 'audience', what, stage),
+    clientId: requireString(body, 'client_id', what, stage),
+    serviceAccountId: requireUuid(body, 'service_account_id', what, stage),
+    activationVersion: requireUuid(body, 'activation_version', what, stage),
     identitySource: requireSource(body, what, stage),
-    kid: requireString(body, "kid", what, stage)
+    kid: requireString(body, 'kid', what, stage),
   });
 }
 
 /** Parse Keycloak's client-credentials response and bound its cache lifetime. */
 export function parseWorkloadTokenResponse(raw: unknown): WorkloadAccessTokenResponse {
-  const stage = "token";
-  const what = "Keycloak workload token response";
+  const stage = 'token';
+  const what = 'Keycloak workload token response';
   const body = requireObject(raw, what, stage);
 
-  const accessToken = body["access_token"];
-  if (typeof accessToken !== "string" || !VISIBLE_ASCII.test(accessToken)) {
+  const accessToken = body['access_token'];
+  if (typeof accessToken !== 'string' || !VISIBLE_ASCII.test(accessToken)) {
     fail(stage, `${what} is invalid: 'access_token' must be a non-empty token string.`);
   }
-  const tokenType = body["token_type"];
-  if (typeof tokenType !== "string" || tokenType.toLowerCase() !== "bearer") {
+  const tokenType = body['token_type'];
+  if (typeof tokenType !== 'string' || tokenType.toLowerCase() !== 'bearer') {
     fail(stage, `${what} is invalid: 'token_type' must be Bearer.`);
   }
-  const expiresIn = body["expires_in"];
+  const expiresIn = body['expires_in'];
   if (
-    typeof expiresIn !== "number" ||
+    typeof expiresIn !== 'number' ||
     !Number.isFinite(expiresIn) ||
     expiresIn <= ACCESS_TOKEN_REFRESH_MARGIN_SECONDS
   ) {
     fail(
       stage,
       `${what} is invalid: 'expires_in' must be a number of seconds greater than ` +
-        `${ACCESS_TOKEN_REFRESH_MARGIN_SECONDS}.`
+        `${ACCESS_TOKEN_REFRESH_MARGIN_SECONDS}.`,
     );
   }
   return { accessToken, cacheSeconds: Math.min(expiresIn, MAX_ACCESS_TOKEN_CACHE_SECONDS) };

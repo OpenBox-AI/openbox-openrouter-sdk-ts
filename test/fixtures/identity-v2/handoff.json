@@ -1,0 +1,33 @@
+{
+  "name": "handoff",
+  "description": "Source-authenticated handoff.",
+  "method": "POST",
+  "path": "/api/v2/handoffs",
+  "api_key": "obx_test_fixture0000000000000000000000000",
+  "body_base64": "eyJ0YXJnZXRfYWdlbnRfaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMGMiLCJyZWFzb24iOiJkZWxlZ2F0aW9uIn0=",
+  "body_sha256": "8703337f5cdb03503f75b555a4c2572599f49fe35811cde0cdc751a62c50499b",
+  "header": {
+    "alg": "RS256",
+    "kid": "fixture-okta-credential-kid-0001",
+    "typ": "openbox-agent-proof+jwt"
+  },
+  "claims": {
+    "aud": "urn:openbox:fixture-deployment:core",
+    "body_sha256": "8703337f5cdb03503f75b555a4c2572599f49fe35811cde0cdc751a62c50499b",
+    "exp": 1785321060,
+    "htm": "POST",
+    "htu": "/api/v2/handoffs",
+    "iat": 1785321000,
+    "iss": "fixture-okta-ai-agent-0001",
+    "jti": "fixture-jti-0004",
+    "obx_agent_id": "00000000-0000-4000-8000-000000000002",
+    "obx_api_key_sha256": "110309a0cd7157171d3959d3b49450f642709c8517be3a77d2e5d2d52a4ce977",
+    "obx_deployment_id": "fixture-deployment",
+    "obx_organization_id": "00000000-0000-4000-8000-000000000001",
+    "sub": "fixture-okta-ai-agent-0001"
+  },
+  "assertion": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImZpeHR1cmUtb2t0YS1jcmVkZW50aWFsLWtpZC0wMDAxIiwidHlwIjoib3BlbmJveC1hZ2VudC1wcm9vZitqd3QifQ.eyJhdWQiOiJ1cm46b3BlbmJveDpmaXh0dXJlLWRlcGxveW1lbnQ6Y29yZSIsImJvZHlfc2hhMjU2IjoiODcwMzMzN2Y1Y2RiMDM1MDNmNzViNTU1YTRjMjU3MjU5OWY0OWZlMzU4MTFjZGUwY2RjNzUxYTYyYzUwNDk5YiIsImV4cCI6MTc4NTMyMTA2MCwiaHRtIjoiUE9TVCIsImh0dSI6Ii9hcGkvdjIvaGFuZG9mZnMiLCJpYXQiOjE3ODUzMjEwMDAsImlzcyI6ImZpeHR1cmUtb2t0YS1haS1hZ2VudC0wMDAxIiwianRpIjoiZml4dHVyZS1qdGktMDAwNCIsIm9ieF9hZ2VudF9pZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMiIsIm9ieF9hcGlfa2V5X3NoYTI1NiI6IjExMDMwOWEwY2Q3MTU3MTcxZDM5NTlkM2I0OTQ1MGY2NDI3MDljODUxN2JlM2E3N2QyZTVkMmQ1MmE0Y2U5NzciLCJvYnhfZGVwbG95bWVudF9pZCI6ImZpeHR1cmUtZGVwbG95bWVudCIsIm9ieF9vcmdhbml6YXRpb25faWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJzdWIiOiJmaXh0dXJlLW9rdGEtYWktYWdlbnQtMDAwMSJ9.RdtN_xsLgu22IVoYIHRRqescBIBSHUsi2i9SNKqFz7xo4dEvaQuak8zm25c1LrKkbPXjZ5FK7mQb0xjYXG0nf4Qvnhv64BZPAgoiDQbYreemrx7x9GgdMOWSr9qFhQdZW_7IsF5_gQP-Ci4CbzjfP1YEOpC191_YjLjBXWL-Mx_MGUmRD-MaXUsOO15pIhgUu9HFoK0EY63CiWtbR9jTxz8MMbp_45DlMby3TLYxBZXt1ViFaGEMYvDiuXP6nJvdTmhIZHfJqN2nksdW4yalP5FxE1j-78pfyUMh75M50thL8ON7rvFXc4zpuGNkqkbQ4Aw1uRLw1DVjvpgQT9O7oA",
+  "expect": {
+    "valid": true
+  }
+}

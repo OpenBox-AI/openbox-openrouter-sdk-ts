@@ -26,6 +26,8 @@ export const ALL_DATABASE_DRIVERS: DatabaseDriverName[] = [
 
 export interface Logger {
   warn(message: string, meta?: unknown): void;
+  /** Optional. One-line status messages, e.g. that workload authentication is ready. */
+  info?(message: string, meta?: unknown): void;
 }
 
 const consoleLogger: Logger = {

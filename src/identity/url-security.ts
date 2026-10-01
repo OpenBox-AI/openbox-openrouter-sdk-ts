@@ -13,7 +13,8 @@ const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1']);
  * `URL#hostname`. Never a substring match — `localhost.evil.com` is not local.
  */
 export function isLoopbackHostname(hostname: string): boolean {
-  const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  const bare =
+    hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
   return LOOPBACK_HOSTNAMES.has(bare);
 }
 

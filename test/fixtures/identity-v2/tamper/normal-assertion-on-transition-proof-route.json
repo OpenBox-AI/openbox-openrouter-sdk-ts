@@ -1,0 +1,14 @@
+{
+  "name": "normal-assertion-on-transition-proof-route",
+  "description": "A normal validation assertion presented to the transition-proof route, with no transition claims.",
+  "based_on": "transition-proof",
+  "method": "POST",
+  "path": "/api/v2/auth/transition-proof",
+  "api_key": "obx_test_fixture0000000000000000000000000",
+  "body_base64": "eyJzZXNzaW9uX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBhIiwiZXZlbnRfdHlwZSI6IkFjdGl2aXR5U3RhcnRlZCJ9",
+  "assertion": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImZpeHR1cmUtb2t0YS1jcmVkZW50aWFsLWtpZC0wMDAxIiwidHlwIjoib3BlbmJveC1hZ2VudC1wcm9vZitqd3QifQ.eyJhdWQiOiJ1cm46b3BlbmJveDpmaXh0dXJlLWRlcGxveW1lbnQ6Y29yZSIsImJvZHlfc2hhMjU2IjoiMTZkMDE3OTg1YjY2YWUwYTgyNDYyNWRhNGJiMjY1NTI4ZTk4OTQwODY3Zjc3ZmVlZWZhOTQ4OTFlMmQxYWJkZSIsImV4cCI6MTc4NTMyMTA2MCwiaHRtIjoiUE9TVCIsImh0dSI6Ii9hcGkvdjIvYXV0aC90cmFuc2l0aW9uLXByb29mIiwiaWF0IjoxNzg1MzIxMDAwLCJpc3MiOiJmaXh0dXJlLW9rdGEtYWktYWdlbnQtMDAwMSIsImp0aSI6ImZpeHR1cmUtanRpLXRhbXBlciIsIm9ieF9hZ2VudF9pZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMiIsIm9ieF9hcGlfa2V5X3NoYTI1NiI6IjExMDMwOWEwY2Q3MTU3MTcxZDM5NTlkM2I0OTQ1MGY2NDI3MDljODUxN2JlM2E3N2QyZTVkMmQ1MmE0Y2U5NzciLCJvYnhfZGVwbG95bWVudF9pZCI6ImZpeHR1cmUtZGVwbG95bWVudCIsIm9ieF9vcmdhbml6YXRpb25faWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJzdWIiOiJmaXh0dXJlLW9rdGEtYWktYWdlbnQtMDAwMSJ9.f-MlwJXFBpZj6tArs5Le9DuRat8VGaIxG8sWMXcuRlixPFL5kp7uYNO7-34LFsQmTKP-ku60ftTZ6IZjcaS7APlEzJdbPBxvOl6QDf6hF1OZ1EvOWWRmnAN9fM2YEn6Gue5_8hF8W-mzfB-G5ehLPoMOTtVytt2BpUJlLwTN4vvJJzNJTGKwj5TgUhI4Uh-BrwrbY171c20ykgo2Ge52i7nPoHV8MxkDCDT0hC1t3TCNnFwCu9QubjkdHZbOylj-lsMrjnsLuO2yu8xVa0E6tbrb51ky029sWUqU1XLQgRkGNTdxOz-RJxiV54Jc-DSkm2lkrHm7g-Ip15KNytZLHQ",
+  "expect": {
+    "valid": false,
+    "reason_code": "transition_proof_invalid"
+  }
+}

@@ -29,7 +29,7 @@ export interface AuthenticationTransport {
 }
 
 export interface AuthenticationRequest {
-  readonly method: "GET" | "POST";
+  readonly method: 'GET' | 'POST';
   readonly headers: Record<string, string>;
   readonly body?: string;
 }
@@ -51,10 +51,10 @@ export function reasonCodeFrom(text: string, keys: readonly string[]): string | 
   } catch {
     return null;
   }
-  if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return null;
   for (const key of keys) {
     const value = (data as Record<string, unknown>)[key];
-    if (typeof value === "string" && SAFE_CODE.test(value)) return value;
+    if (typeof value === 'string' && SAFE_CODE.test(value)) return value;
   }
   return null;
 }
@@ -65,16 +65,16 @@ export function reasonCodeFrom(text: string, keys: readonly string[]): string | 
  * redirect (browsers). v3 requests never follow one.
  */
 export function isRedirectResponse(response: Response): boolean {
-  return response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400);
+  return response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400);
 }
 
-export const CORE_REASON_KEYS = ["reason_code", "code", "reason"] as const;
+export const CORE_REASON_KEYS = ['reason_code', 'code', 'reason'] as const;
 /** OAuth token-endpoint errors carry `error` (RFC 6749 §5.2); `error_description` is never read. */
-export const OAUTH_REASON_KEYS = ["error"] as const;
+export const OAUTH_REASON_KEYS = ['error'] as const;
 
 function networkDetail(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
-  const cause = error.cause instanceof Error ? `: ${error.cause.message}` : "";
+  const cause = error.cause instanceof Error ? `: ${error.cause.message}` : '';
   return `${error.message}${cause}`;
 }
 
@@ -88,9 +88,12 @@ export async function sendAuthenticationRequest(
   stage: WorkloadAuthStage,
   url: string,
   request: AuthenticationRequest,
-  describe: { readonly target: string; readonly networkFailure: (detail: string) => string }
+  describe: { readonly target: string; readonly networkFailure: (detail: string) => string },
 ): Promise<AuthenticationResponse> {
-  const { signal, dispose } = anySignal([timeoutSignal(transport.timeoutMs), transport.closeSignal]);
+  const { signal, dispose } = anySignal([
+    timeoutSignal(transport.timeoutMs),
+    transport.closeSignal,
+  ]);
   let response: Response;
   try {
     response = await transport.fetchImpl(url, {
@@ -108,11 +111,11 @@ export async function sendAuthenticationRequest(
   if (isRedirectResponse(response)) {
     throw new OpenBoxWorkloadAuthError(
       `${target} answered with a redirect (HTTP ${response.status}); redirects are refused so ` +
-        "credentials never follow them to another target.",
-      { stage, httpStatus: response.status }
+        'credentials never follow them to another target.',
+      { stage, httpStatus: response.status },
     );
   }
-  const text = await response.text().catch(() => "");
+  const text = await response.text().catch(() => '');
   return { status: response.status, text };
 }
 
@@ -131,27 +134,31 @@ export function workloadBootstrapFailure(status: number, text: string): OpenBoxW
   let message: string;
   if (status === 404) {
     message =
-      "OpenBox Core does not serve GET /api/v3/auth/bootstrap (HTTP 404), so this deployment cannot " +
-      "authenticate Keycloak workload identities. The SDK does not fall back to v1/v2 or API-key-only " +
+      'OpenBox Core does not serve GET /api/v3/auth/bootstrap (HTTP 404), so this deployment cannot ' +
+      'authenticate Keycloak workload identities. The SDK does not fall back to v1/v2 or API-key-only ' +
       "requests: upgrade Core, or explicitly configure the agent's legacy identity instead.";
-  } else if (status === 409 && reasonCode === "workload_identity_unavailable") {
+  } else if (status === 409 && reasonCode === 'workload_identity_unavailable') {
     message =
       `OpenBox Core returned no usable active workload authority for this agent (${detail}). ` +
       "Check the agent's workload provisioning and activation and the Core deployment's workload " +
-      "identity schema. The SDK does not fall back to legacy authentication; removing the workload " +
-      "key is not a fix.";
+      'identity schema. The SDK does not fall back to legacy authentication; removing the workload ' +
+      'key is not a fix.';
   } else if (status === 401 || status === 403) {
     message =
       `OpenBox Core rejected the workload bootstrap request (${detail}): the API key is absent, ` +
-      "invalid, or revoked, or the agent is not active. This is an authentication failure, not an outage.";
+      'invalid, or revoked, or the agent is not active. This is an authentication failure, not an outage.';
   } else if (isRetryableStatus(status)) {
     message =
       `OpenBox Core could not return workload identity metadata (${detail}); no governed request ` +
-      "was sent. Retry later.";
+      'was sent. Retry later.';
   } else {
     message = `OpenBox Core rejected the workload bootstrap request (${detail}).`;
   }
-  return new OpenBoxWorkloadAuthError(message, { stage: "bootstrap", httpStatus: status, reasonCode });
+  return new OpenBoxWorkloadAuthError(message, {
+    stage: 'bootstrap',
+    httpStatus: status,
+    reasonCode,
+  });
 }
 
 /** Classify a non-200 Keycloak token-endpoint response. */
@@ -162,7 +169,7 @@ export function workloadTokenFailure(status: number, text: string): OpenBoxWorkl
     status === 400 || status === 401 || status === 403
       ? `Keycloak rejected the workload client assertion (${detail}). Confirm this runtime holds the ` +
         "private key registered for the agent's active service account; a different key requires a " +
-        "new client after the managed transition."
+        'new client after the managed transition.'
       : `Keycloak's token endpoint failed (${detail}); no governed request was sent. Retry later.`;
-  return new OpenBoxWorkloadAuthError(message, { stage: "token", httpStatus: status, reasonCode });
+  return new OpenBoxWorkloadAuthError(message, { stage: 'token', httpStatus: status, reasonCode });
 }

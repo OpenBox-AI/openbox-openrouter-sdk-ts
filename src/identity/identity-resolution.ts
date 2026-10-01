@@ -18,7 +18,7 @@ export const AGENT_IDENTITY_METHODS: readonly AgentIdentityMethod[] = [
   'keycloak_workload',
 ];
 
-export type ResolvedIdentityMethod = AgentIdentityMethod | "legacy_unsigned";
+export type ResolvedIdentityMethod = AgentIdentityMethod | 'legacy_unsigned';
 
 /** The flat, env-resolved identity fields `OpenBoxConfig` carries. */
 export interface IdentityFields {
@@ -60,15 +60,15 @@ function hasOktaFields(fields: IdentityFields): boolean {
  */
 export function resolveIdentityMethod(fields: IdentityFields): ResolvedIdentityMethod {
   if (fields.identityMethod) return fields.identityMethod;
-  if (hasDidFields(fields)) return "openbox_did";
-  if (fields.workloadPrivateKey) return "keycloak_workload";
-  if (hasOktaFields(fields)) return "okta_ai_agent";
-  return "legacy_unsigned";
+  if (hasDidFields(fields)) return 'openbox_did';
+  if (fields.workloadPrivateKey) return 'keycloak_workload';
+  if (hasOktaFields(fields)) return 'okta_ai_agent';
+  return 'legacy_unsigned';
 }
 
 const DID_FIELD_LABELS: Array<[key: keyof IdentityFields, label: string]> = [
-  ["agentDid", "agentDid (OPENBOX_AGENT_DID)"],
-  ["agentPrivateKey", "agentPrivateKey (OPENBOX_AGENT_PRIVATE_KEY)"]
+  ['agentDid', 'agentDid (OPENBOX_AGENT_DID)'],
+  ['agentPrivateKey', 'agentPrivateKey (OPENBOX_AGENT_PRIVATE_KEY)'],
 ];
 
 /**
@@ -77,21 +77,21 @@ const DID_FIELD_LABELS: Array<[key: keyof IdentityFields, label: string]> = [
  * the documented migration alias for the workload key.
  */
 const OKTA_LEFTOVER_FIELD_LABELS: Array<[key: keyof IdentityFields, label: string]> = [
-  ["agentId", "agentId (OPENBOX_AGENT_ID)"],
-  ["organizationId", "organizationId (OPENBOX_ORGANIZATION_ID)"],
-  ["deploymentId", "deploymentId (OPENBOX_DEPLOYMENT_ID)"],
-  ["agentProofAudience", "agentProofAudience (OPENBOX_AGENT_PROOF_AUDIENCE)"],
-  ["oktaAgentId", "oktaAgentId (OPENBOX_OKTA_AGENT_ID)"],
-  ["oktaAgentKeyId", "oktaAgentKeyId (OPENBOX_OKTA_AGENT_KEY_ID)"],
-  ["oktaAgentAlgorithm", "oktaAgentAlgorithm (OPENBOX_OKTA_AGENT_ALGORITHM)"]
+  ['agentId', 'agentId (OPENBOX_AGENT_ID)'],
+  ['organizationId', 'organizationId (OPENBOX_ORGANIZATION_ID)'],
+  ['deploymentId', 'deploymentId (OPENBOX_DEPLOYMENT_ID)'],
+  ['agentProofAudience', 'agentProofAudience (OPENBOX_AGENT_PROOF_AUDIENCE)'],
+  ['oktaAgentId', 'oktaAgentId (OPENBOX_OKTA_AGENT_ID)'],
+  ['oktaAgentKeyId', 'oktaAgentKeyId (OPENBOX_OKTA_AGENT_KEY_ID)'],
+  ['oktaAgentAlgorithm', 'oktaAgentAlgorithm (OPENBOX_OKTA_AGENT_ALGORITHM)'],
 ];
 
-const WORKLOAD_KEY_LABEL = "workloadPrivateKey (OPENBOX_WORKLOAD_PRIVATE_KEY)";
-const OKTA_KEY_LABEL = "oktaAgentPrivateKey (OPENBOX_OKTA_AGENT_PRIVATE_KEY)";
+const WORKLOAD_KEY_LABEL = 'workloadPrivateKey (OPENBOX_WORKLOAD_PRIVATE_KEY)';
+const OKTA_KEY_LABEL = 'oktaAgentPrivateKey (OPENBOX_OKTA_AGENT_PRIVATE_KEY)';
 
 function presentLabels(
   fields: IdentityFields,
-  labels: Array<[key: keyof IdentityFields, label: string]>
+  labels: Array<[key: keyof IdentityFields, label: string]>,
 ): string[] {
   return labels.filter(([key]) => Boolean(fields[key])).map(([, label]) => label);
 }
@@ -107,7 +107,7 @@ function presentLabels(
  * credentials wins.
  */
 export function describeWorkloadConflict(fields: IdentityFields): string | null {
-  const explicit = fields.identityMethod === "keycloak_workload";
+  const explicit = fields.identityMethod === 'keycloak_workload';
   const neutralKey = Boolean(fields.workloadPrivateKey);
   if (!explicit && !neutralKey) return null;
 
@@ -120,18 +120,18 @@ export function describeWorkloadConflict(fields: IdentityFields): string | null 
   if (neutralKey && fields.oktaAgentPrivateKey) {
     return (
       `Both ${WORKLOAD_KEY_LABEL} and its migration alias ${OKTA_KEY_LABEL} are configured. ` +
-      "Configure exactly one workload private key; the SDK never guesses which credential wins."
+      'Configure exactly one workload private key; the SDK never guesses which credential wins.'
     );
   }
 
   const conflicting = [
     ...presentLabels(fields, DID_FIELD_LABELS),
-    ...presentLabels(fields, OKTA_LEFTOVER_FIELD_LABELS)
+    ...presentLabels(fields, OKTA_LEFTOVER_FIELD_LABELS),
   ];
   if (conflicting.length > 0) {
     return (
-      `Keycloak workload identity (keycloak_workload) cannot be combined with: ${conflicting.join(", ")}. ` +
-      "Workload metadata comes from OpenBox Core; remove the conflicting setting(s)."
+      `Keycloak workload identity (keycloak_workload) cannot be combined with: ${conflicting.join(', ')}. ` +
+      'Workload metadata comes from OpenBox Core; remove the conflicting setting(s).'
     );
   }
 
@@ -150,9 +150,9 @@ export function describeWorkloadConflict(fields: IdentityFields): string | null 
  * `keycloak_workload` selection. `null` for every other method.
  */
 export function resolveWorkloadPrivateKey(fields: IdentityFields): string | null {
-  if (resolveIdentityMethod(fields) !== "keycloak_workload") return null;
+  if (resolveIdentityMethod(fields) !== 'keycloak_workload') return null;
   if (fields.workloadPrivateKey) return fields.workloadPrivateKey;
-  if (fields.identityMethod === "keycloak_workload" && fields.oktaAgentPrivateKey) {
+  if (fields.identityMethod === 'keycloak_workload' && fields.oktaAgentPrivateKey) {
     return fields.oktaAgentPrivateKey;
   }
   return null;
@@ -166,15 +166,15 @@ export function resolveWorkloadPrivateKey(fields: IdentityFields): string | null
 export function describeMutualExclusionConflict(fields: IdentityFields): string | null {
   if (!hasDidFields(fields) || !hasOktaFields(fields)) return null;
   const didNames: string[] = [];
-  if (fields.agentDid) didNames.push("agentDid");
-  if (fields.agentPrivateKey) didNames.push("agentPrivateKey");
+  if (fields.agentDid) didNames.push('agentDid');
+  if (fields.agentPrivateKey) didNames.push('agentPrivateKey');
   const oktaNames: string[] = [];
-  if (fields.oktaAgentId) oktaNames.push("oktaAgentId");
-  if (fields.oktaAgentKeyId) oktaNames.push("oktaAgentKeyId");
-  if (fields.oktaAgentPrivateKey) oktaNames.push("oktaAgentPrivateKey");
+  if (fields.oktaAgentId) oktaNames.push('oktaAgentId');
+  if (fields.oktaAgentKeyId) oktaNames.push('oktaAgentKeyId');
+  if (fields.oktaAgentPrivateKey) oktaNames.push('oktaAgentPrivateKey');
   return (
-    `OpenBox DID fields (${didNames.join(", ")}) and Okta fields (${oktaNames.join(", ")}) ` +
-    "are mutually exclusive; configure exactly one identity method."
+    `OpenBox DID fields (${didNames.join(', ')}) and Okta fields (${oktaNames.join(', ')}) ` +
+    'are mutually exclusive; configure exactly one identity method.'
   );
 }
 
@@ -185,14 +185,14 @@ export function describeMutualExclusionConflict(fields: IdentityFields): string 
  */
 export function listMissingOktaFields(fields: IdentityFields): string[] {
   const required: Array<[value: string | null, label: string]> = [
-    [fields.agentId, "agentId (OPENBOX_AGENT_ID)"],
-    [fields.organizationId, "organizationId (OPENBOX_ORGANIZATION_ID)"],
-    [fields.deploymentId, "deploymentId (OPENBOX_DEPLOYMENT_ID)"],
-    [fields.oktaAgentId, "oktaAgentId (OPENBOX_OKTA_AGENT_ID)"],
-    [fields.oktaAgentKeyId, "oktaAgentKeyId (OPENBOX_OKTA_AGENT_KEY_ID)"],
-    [fields.oktaAgentAlgorithm, "oktaAgentAlgorithm (OPENBOX_OKTA_AGENT_ALGORITHM)"],
-    [fields.oktaAgentPrivateKey, "oktaAgentPrivateKey (OPENBOX_OKTA_AGENT_PRIVATE_KEY)"],
-    [fields.agentProofAudience, "agentProofAudience (OPENBOX_AGENT_PROOF_AUDIENCE)"]
+    [fields.agentId, 'agentId (OPENBOX_AGENT_ID)'],
+    [fields.organizationId, 'organizationId (OPENBOX_ORGANIZATION_ID)'],
+    [fields.deploymentId, 'deploymentId (OPENBOX_DEPLOYMENT_ID)'],
+    [fields.oktaAgentId, 'oktaAgentId (OPENBOX_OKTA_AGENT_ID)'],
+    [fields.oktaAgentKeyId, 'oktaAgentKeyId (OPENBOX_OKTA_AGENT_KEY_ID)'],
+    [fields.oktaAgentAlgorithm, 'oktaAgentAlgorithm (OPENBOX_OKTA_AGENT_ALGORITHM)'],
+    [fields.oktaAgentPrivateKey, 'oktaAgentPrivateKey (OPENBOX_OKTA_AGENT_PRIVATE_KEY)'],
+    [fields.agentProofAudience, 'agentProofAudience (OPENBOX_AGENT_PROOF_AUDIENCE)'],
   ];
   return required.filter(([value]) => !value).map(([, label]) => label);
 }
@@ -209,7 +209,7 @@ export function listMissingOktaFields(fields: IdentityFields): string[] {
  * exists to eliminate: a leftover `oktaAgentKeyId` from before a rotation would
  * silently win over the correct value Core would have supplied.
  */
-export type OktaConfigMode = "bootstrap" | "legacy" | "mixed";
+export type OktaConfigMode = 'bootstrap' | 'legacy' | 'mixed';
 
 /**
  * The metadata fields Core supplies in bootstrap mode, and their env names.
@@ -220,12 +220,12 @@ export type OktaConfigMode = "bootstrap" | "legacy" | "mixed";
  * (re-checked as RS256 on arrival).
  */
 const BOOTSTRAP_MANAGED_FIELDS: Array<[key: keyof IdentityFields, label: string]> = [
-  ["agentId", "agentId (OPENBOX_AGENT_ID)"],
-  ["organizationId", "organizationId (OPENBOX_ORGANIZATION_ID)"],
-  ["deploymentId", "deploymentId (OPENBOX_DEPLOYMENT_ID)"],
-  ["agentProofAudience", "agentProofAudience (OPENBOX_AGENT_PROOF_AUDIENCE)"],
-  ["oktaAgentId", "oktaAgentId (OPENBOX_OKTA_AGENT_ID)"],
-  ["oktaAgentKeyId", "oktaAgentKeyId (OPENBOX_OKTA_AGENT_KEY_ID)"]
+  ['agentId', 'agentId (OPENBOX_AGENT_ID)'],
+  ['organizationId', 'organizationId (OPENBOX_ORGANIZATION_ID)'],
+  ['deploymentId', 'deploymentId (OPENBOX_DEPLOYMENT_ID)'],
+  ['agentProofAudience', 'agentProofAudience (OPENBOX_AGENT_PROOF_AUDIENCE)'],
+  ['oktaAgentId', 'oktaAgentId (OPENBOX_OKTA_AGENT_ID)'],
+  ['oktaAgentKeyId', 'oktaAgentKeyId (OPENBOX_OKTA_AGENT_KEY_ID)'],
 ];
 
 /** The bootstrap-managed fields that are set — the "unexpected" list for `mixed`. */
@@ -241,27 +241,29 @@ export function listUnexpectedBootstrapFields(fields: IdentityFields): string[] 
  */
 export function classifyOktaConfigMode(fields: IdentityFields): OktaConfigMode {
   const present = listUnexpectedBootstrapFields(fields);
-  if (present.length === 0) return "bootstrap";
-  if (present.length === BOOTSTRAP_MANAGED_FIELDS.length) return "legacy";
-  return "mixed";
+  if (present.length === 0) return 'bootstrap';
+  if (present.length === BOOTSTRAP_MANAGED_FIELDS.length) return 'legacy';
+  return 'mixed';
 }
 
 /** The error text for a `mixed` configuration, naming the offending fields. */
 export function describeMixedOktaConfig(fields: IdentityFields): string {
   const present = listUnexpectedBootstrapFields(fields);
-  const missing = BOOTSTRAP_MANAGED_FIELDS.filter(([key]) => !fields[key]).map(([, label]) => label);
+  const missing = BOOTSTRAP_MANAGED_FIELDS.filter(([key]) => !fields[key]).map(
+    ([, label]) => label,
+  );
   return (
-    "Okta identity configuration is incomplete and cannot be combined with identity bootstrap. " +
-    `Configured: ${present.join(", ")}. Missing: ${missing.join(", ")}. ` +
-    "Either remove the configured field(s) to let OpenBox Core supply all identity metadata " +
-    "(bootstrap mode, requiring only apiUrl, apiKey and oktaAgentPrivateKey), or configure every " +
-    "remaining field for fully explicit configuration."
+    'Okta identity configuration is incomplete and cannot be combined with identity bootstrap. ' +
+    `Configured: ${present.join(', ')}. Missing: ${missing.join(', ')}. ` +
+    'Either remove the configured field(s) to let OpenBox Core supply all identity metadata ' +
+    '(bootstrap mode, requiring only apiUrl, apiKey and oktaAgentPrivateKey), or configure every ' +
+    'remaining field for fully explicit configuration.'
   );
 }
 
 /** Only RS256 is allowlisted; the error text for any other algorithm, else null. */
 function describeOktaAlgorithmProblem(algorithm: string | null): string | null {
-  return algorithm === "RS256"
+  return algorithm === 'RS256'
     ? null
     : `oktaAgentAlgorithm must be 'RS256' (got ${JSON.stringify(algorithm)}); only RS256 is allowlisted.`;
 }
@@ -275,24 +277,24 @@ export function describeOktaConfigProblem(fields: IdentityFields): string | null
   // The private key is the one value Core can never supply, in either mode.
   if (!fields.oktaAgentPrivateKey) {
     return (
-      "Okta agent identity requires oktaAgentPrivateKey (OPENBOX_OKTA_AGENT_PRIVATE_KEY); " +
+      'Okta agent identity requires oktaAgentPrivateKey (OPENBOX_OKTA_AGENT_PRIVATE_KEY); ' +
       "OpenBox never holds or returns an agent's private key."
     );
   }
 
   switch (classifyOktaConfigMode(fields)) {
-    case "mixed":
+    case 'mixed':
       return describeMixedOktaConfig(fields);
-    case "legacy": {
+    case 'legacy': {
       // Fully explicit configuration — unchanged from before bootstrap
       // existed, so an already-deployed runtime keeps working verbatim.
       const missing = listMissingOktaFields(fields);
       if (missing.length > 0) {
-        return `Okta agent identity is missing required field(s): ${missing.join(", ")}.`;
+        return `Okta agent identity is missing required field(s): ${missing.join(', ')}.`;
       }
       return describeOktaAlgorithmProblem(fields.oktaAgentAlgorithm);
     }
-    case "bootstrap":
+    case 'bootstrap':
       // Nothing further to validate offline. The remaining checks — key
       // parsing, RSA size, and the thumbprint match against the selected
       // credential — need the private key and the network, and belong to the
@@ -302,6 +304,8 @@ export function describeOktaConfigProblem(fields: IdentityFields): string | null
       // An explicitly set algorithm must still be the allowlisted one, so a
       // stale `OPENBOX_OKTA_AGENT_ALGORITHM=RS512` fails here rather than
       // being silently ignored.
-      return fields.oktaAgentAlgorithm === null ? null : describeOktaAlgorithmProblem(fields.oktaAgentAlgorithm);
+      return fields.oktaAgentAlgorithm === null
+        ? null
+        : describeOktaAlgorithmProblem(fields.oktaAgentAlgorithm);
   }
 }
