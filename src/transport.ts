@@ -11,6 +11,7 @@
  */
 
 import { envString } from './env';
+import { GovernanceAuthError, SoftGovernanceError } from './errors';
 import { buildSignedHeaders, serializeBody } from './signing';
 
 const OPENBOX_TIMEOUT_MS = 35_000;
@@ -45,34 +46,7 @@ export interface OpenBoxTransport {
   request<T = unknown>(options: OpenBoxRequestOptions): Promise<T>;
 }
 
-/**
- * Marker error for governance/network failures. Callers that can safely
- * continue (fail-open) catch this; callers that must fail hard re-throw it.
- */
-export class SoftGovernanceError extends Error {
-  public readonly cause: unknown;
-  constructor(message: string, cause: unknown) {
-    super(message);
-    this.name = 'SoftGovernanceError';
-    this.cause = cause;
-  }
-}
-
-/**
- * A 401/403 from Core. Always a hard failure — never caught as fail-open,
- * regardless of the configured onApiError policy: a revoked or invalid key
- * must never silently degrade to "run ungoverned".
- */
-export class GovernanceAuthError extends Error {
-  public readonly statusCode: number;
-  public readonly cause: unknown;
-  constructor(message: string, statusCode: number, cause: unknown) {
-    super(message);
-    this.name = 'GovernanceAuthError';
-    this.statusCode = statusCode;
-    this.cause = cause;
-  }
-}
+export { GovernanceAuthError, SoftGovernanceError } from './errors';
 
 export const DEFAULT_OPENBOX_URL = 'https://core.openbox.ai';
 
