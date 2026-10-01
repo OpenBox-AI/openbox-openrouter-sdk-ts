@@ -8,13 +8,7 @@ import {
   withPatchHint,
 } from './verdict';
 
-const _timersMod = 'timers';
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { setTimeout: _setTimeout } = require(_timersMod) as typeof import('timers');
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => _setTimeout(resolve, ms));
-}
+import { ApprovalWaitAbortedError, sleepUnlessAborted } from './wait';
 
 export async function pollApprovalOrHalt(
   mw: OpenBoxOpenRouterMiddleware,
@@ -27,18 +21,42 @@ export async function pollApprovalOrHalt(
     throw new GovernanceHaltError(`Approval required for activity ${activityType}`);
   }
 
-  const timeoutMs = mw._config.hitl.timeoutMs;
+  const { timeoutMs, pollIntervalMs, abortSignal } = mw._config.hitl;
+  // An abort fails safe — the held operation does not run — and is never
+  // mistaken for a transient poll failure and retried.
+  const aborted = () =>
+    new GovernanceHaltError(
+      `Approval wait aborted for activity ${activityType} (workflow_id=${turn.workflowId}, run_id=${turn.runId}, activity_id=${activityId}) — not running it`,
+    );
+  const sleep = async (ms: number) => {
+    try {
+      await sleepUnlessAborted(ms, abortSignal);
+    } catch (err) {
+      if (err instanceof ApprovalWaitAbortedError) throw aborted();
+      throw err;
+    }
+  };
+
   const startedAt = Date.now();
   while (timeoutMs == null || Date.now() - startedAt <= timeoutMs) {
-    const response = await mw._client.pollApproval(
-      turn.workflowId,
-      turn.runId,
-      activityId,
-      approvalId,
-      mw._config.onApiError,
-    );
+    if (abortSignal?.aborted) throw aborted();
+    let response;
+    try {
+      response = await mw._client.pollApproval(
+        turn.workflowId,
+        turn.runId,
+        activityId,
+        approvalId,
+        mw._config.onApiError,
+        abortSignal,
+      );
+    } catch (err) {
+      if (abortSignal?.aborted) throw aborted();
+      throw err;
+    }
+    if (abortSignal?.aborted) throw aborted();
     if (response == null) {
-      await sleep(mw._config.hitl.pollIntervalMs);
+      await sleep(pollIntervalMs);
       continue;
     }
 
@@ -57,7 +75,7 @@ export async function pollApprovalOrHalt(
     // anything. Only interpret a verdict once Core actually sent one.
     const rawVerdict = response.arm ?? response.verdict ?? response.action;
     if (typeof rawVerdict !== 'string' || rawVerdict.trim() === '') {
-      await sleep(mw._config.hitl.pollIntervalMs);
+      await sleep(pollIntervalMs);
       continue;
     }
 
@@ -74,7 +92,7 @@ export async function pollApprovalOrHalt(
       );
     }
 
-    await sleep(mw._config.hitl.pollIntervalMs);
+    await sleep(pollIntervalMs);
   }
 
   throw new GovernanceHaltError(

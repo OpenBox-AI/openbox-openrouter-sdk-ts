@@ -532,7 +532,12 @@ createOpenBoxGovernance({
   governanceTimeout: 30,            // seconds
   toolTypeMap: { db_query: 'database' },
   skipToolTypes: new Set(['echo']),
-  hitl: { enabled: true, pollIntervalMs: 5000, timeoutMs: 60 * 60 * 1000 },
+  hitl: {
+    enabled: true,
+    pollIntervalMs: 5000,
+    timeoutMs: 60 * 60 * 1000,
+    abortSignal: shutdown.signal,   // optional — ends a pending approval wait
+  },
   instrumentHttp: true,             // default
   instrumentDatabases: true,        // default; pg/mysql2/mongodb/redis/ioredis
   instrumentFileIo: false,          // default
@@ -547,6 +552,12 @@ createOpenBoxGovernance({
 unreachable. `'fail_closed'` aborts it. Auth failures (401/403) always
 hard-fail regardless — a revoked key must never silently degrade to "run
 ungoverned".
+
+While an activity waits for a human decision, the SDK polls Core and keeps
+the process alive. To end a wait early, on shutdown for example, pass
+`hitl.abortSignal` and abort it. The wait stops at once, the poll in flight is
+cancelled, and the held operation fails safe: it does not run, and the run
+sees a `GovernanceHaltError`.
 
 `captureRequestObjectBody` is off for a reason: reading a body off a `Request`
 requires cloning it, which leaves the caller's object in a state their retry

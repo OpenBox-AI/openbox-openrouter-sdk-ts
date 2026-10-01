@@ -113,6 +113,7 @@ export class GovernanceClient {
     activityId: string,
     approvalId?: string,
     onApiError: OnApiError = 'fail_open',
+    signal?: AbortSignal,
   ): Promise<ApprovalPollResponse | null> {
     // If Core returned an approval_id in the evaluate response, use it as the
     // poll key (Core returns it on the verdict). Otherwise
@@ -128,6 +129,7 @@ export class GovernanceClient {
         body: reqBody,
         traceId: this.traceId,
         timeoutMs: this.timeoutMs,
+        signal,
       });
       const expiration = data.approval_expiration_time ?? data.approvalExpirationTime;
       if (typeof expiration === 'string' && expiration.trim()) {

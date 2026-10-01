@@ -31,6 +31,8 @@ export interface OpenBoxRequestOptions {
   traceId?: string;
   /** Overrides OPENBOX_TIMEOUT_MS — sourced from GovernanceConfig.governanceTimeout. */
   timeoutMs?: number;
+  /** Cancels the request; combined with the timeout. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -135,6 +137,11 @@ export class FetchTransport implements OpenBoxTransport {
       () => controller.abort(),
       options.timeoutMs ?? OPENBOX_TIMEOUT_MS,
     );
+    // Combined by hand rather than with AbortSignal.any, which Node 18 lacks.
+    const callerSignal = options.signal;
+    const onCallerAbort = () => controller.abort();
+    if (callerSignal?.aborted) controller.abort();
+    else callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
 
     let response: Response;
     try {
@@ -153,6 +160,7 @@ export class FetchTransport implements OpenBoxTransport {
       throw new SoftGovernanceError(err instanceof Error ? err.message : String(err), err);
     } finally {
       clearTimeout(timer);
+      callerSignal?.removeEventListener('abort', onCallerAbort);
     }
 
     const text = await response.text().catch(() => '');
