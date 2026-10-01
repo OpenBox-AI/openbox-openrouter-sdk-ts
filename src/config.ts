@@ -12,6 +12,7 @@
  */
 
 import type { OpenBoxCredentials, OpenBoxTransport } from './transport';
+import { DEFAULT_PROVENANCE_TIMEOUT_MS } from './provenance';
 
 export type DatabaseDriverName = 'pg' | 'mysql2' | 'mongodb' | 'redis' | 'ioredis';
 
@@ -97,6 +98,15 @@ export interface OpenBoxOpenRouterOptions extends Partial<OpenBoxCredentials> {
   preflightRouting?: boolean;
   /** Key used to read generation records. Defaults to `OPENROUTER_API_KEY`. */
   openrouterApiKey?: string;
+  /**
+   * How long to wait for OpenRouter's generation record, in milliseconds
+   * (`OPENBOX_PROVENANCE_TIMEOUT_MS`, default 180000). OpenRouter publishes it
+   * after the response, measured at up to ~2 minutes. The session stays open
+   * until the record lands or this runs out, because Core accepts no events
+   * once a session has closed; the caller's own read of the answer does not
+   * wait for it, but `close()` does.
+   */
+  provenanceTimeoutMs?: number;
   instrumentFileIo?: boolean;
   /** Back-compat boolean — true enables all drivers in ALL_DATABASE_DRIVERS. */
   instrumentDatabases?: boolean;
@@ -135,6 +145,7 @@ export interface GovernanceConfig {
   attestRouting: boolean;
   preflightRouting: boolean;
   openrouterApiKey: string | null;
+  provenanceTimeoutMs: number;
   instrumentFileIo: boolean;
   instrumentDatabases: boolean;
   databases: Set<DatabaseDriverName>;
@@ -196,6 +207,10 @@ export function mergeConfig(opts: OpenBoxOpenRouterOptions): GovernanceConfig {
       opts.preflightRouting ?? process.env.OPENBOX_PREFLIGHT_ROUTING !== 'false',
     openrouterApiKey:
       opts.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? null,
+    provenanceTimeoutMs:
+      opts.provenanceTimeoutMs ??
+      envNumber('OPENBOX_PROVENANCE_TIMEOUT_MS') ??
+      DEFAULT_PROVENANCE_TIMEOUT_MS,
     instrumentFileIo: opts.instrumentFileIo ?? false,
     instrumentDatabases: opts.instrumentDatabases ?? true,
     databases,

@@ -83,6 +83,7 @@ import {
   awaitAssistantText,
   beginRoutingAttestation,
   drainRoutingAttestations,
+  routingAttestationsPending,
   evaluateActivitySpan,
   runWithActivityResolver,
   unregisterActivity,
@@ -1360,6 +1361,24 @@ export function createOpenBoxGovernance(
   /** Finalize if, and only if, both the engine and the reader are done. */
   async function maybeFinalize(run: RunState): Promise<void> {
     if (run.closed || !run.engineEnded || run.consumptionsInFlight > 0) return;
+    await finalizeWithoutWaitingOnEvidence(run);
+  }
+
+  /**
+   * Finalize a run without making the caller wait for routing evidence.
+   *
+   * The close drains routing provenance first, and OpenRouter can take minutes
+   * to publish it (see DEFAULT_PROVENANCE_TIMEOUT_MS). The caller already has
+   * the answer by then, so with collection still pending the close carries on
+   * in the background and `close()` awaits it. With nothing pending it is
+   * awaited here as before, so WorkflowCompleted has gone out by the time the
+   * read resolves.
+   */
+  async function finalizeWithoutWaitingOnEvidence(run: RunState): Promise<void> {
+    if (routingAttestationsPending()) {
+      run.pendingFinalize = finalizeRun(run).catch(() => undefined);
+      return;
+    }
     await finalizeRun(run);
   }
 
@@ -1658,7 +1677,7 @@ export function createOpenBoxGovernance(
             // Only close inline when nobody is mid-read; otherwise the reader
             // closes it once the final answer is actually in hand. See
             // `finalizeRun` for why this must not await the reader.
-            if (run.consumptionsInFlight === 0) await finalizeRun(run);
+            if (run.consumptionsInFlight === 0) await finalizeWithoutWaitingOnEvidence(run);
           },
         },
       ],

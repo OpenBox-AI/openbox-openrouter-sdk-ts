@@ -329,18 +329,58 @@ export interface FetchProvenanceOptions {
   apiKey: string;
   baseUrl?: string;
   timeoutMs?: number;
-  /** Backoff schedule between lookups; the record is written asynchronously. */
+  /**
+   * Backoff schedule between lookups; the record is written asynchronously.
+   * When given, it is the whole schedule: one lookup per entry plus the first.
+   */
   backoffMs?: number[];
+  /**
+   * How long to keep looking, in total, when no explicit schedule is given.
+   * Defaults to {@link DEFAULT_PROVENANCE_TIMEOUT_MS}.
+   */
+  deadlineMs?: number;
   /** Marks our own request so the span processor does not trace it. */
   markInternal?: (init: Record<string, unknown>) => Record<string, unknown>;
+}
+
+/**
+ * How long a generation record is waited for by default.
+ *
+ * OpenRouter writes the record after the response, and how long after has
+ * grown: once a few hundred milliseconds, measured at 129s on 2026-10-01. A
+ * budget of a few seconds lost the provenance of every call.
+ */
+export const DEFAULT_PROVENANCE_TIMEOUT_MS = 180_000;
+
+/** The opening waits between lookups, after which they repeat at the cap. */
+const PROVENANCE_BACKOFF_MS = [300, 700, 1_500, 2_500, 4_000];
+const PROVENANCE_BACKOFF_CAP_MS = 10_000;
+
+/**
+ * The waits between lookups for a given total budget: quick at first, for the
+ * record that is already there, then every {@link PROVENANCE_BACKOFF_CAP_MS}
+ * until the budget is spent.
+ */
+export function provenanceBackoffSchedule(deadlineMs: number): number[] {
+  const schedule: number[] = [];
+  let spent = 0;
+  for (let i = 0; spent < deadlineMs; i++) {
+    const wait = Math.min(
+      PROVENANCE_BACKOFF_MS[i] ?? PROVENANCE_BACKOFF_CAP_MS,
+      deadlineMs - spent,
+    );
+    schedule.push(wait);
+    spent += wait;
+  }
+  return schedule;
 }
 
 /**
  * Fetch the generation record for one model call.
  *
  * Returns null rather than throwing: provenance is evidence, and failing to
- * collect it must never fail the run that produced it. The record can lag the
- * response by a moment, so a 404 is retried once.
+ * collect it must never fail the run that produced it. The record lags the
+ * response, so a 404 is retried until the deadline.
  */
 export async function fetchGenerationRecord(
   generationId: string,
@@ -353,11 +393,13 @@ export async function fetchGenerationRecord(
   const url = `${base}${GENERATION_PATH}?id=${encodeURIComponent(generationId)}`;
   const timeoutMs = opts.timeoutMs ?? 4_000;
 
-  // OpenRouter writes the generation record shortly after the response, not
-  // with it: measured 404 at +0ms and at +400ms, present a moment later. Since
-  // this runs in the background, it can afford to wait properly rather than
-  // give up and lose the evidence.
-  const backoffMs = opts.backoffMs ?? [300, 700, 1_500, 2_500, 4_000];
+  // OpenRouter writes the generation record after the response, not with it,
+  // and the lag is not small: see DEFAULT_PROVENANCE_TIMEOUT_MS. Since this
+  // runs in the background, it can afford to wait properly rather than give up
+  // and lose the evidence.
+  const backoffMs =
+    opts.backoffMs ??
+    provenanceBackoffSchedule(opts.deadlineMs ?? DEFAULT_PROVENANCE_TIMEOUT_MS);
 
   for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
     if (attempt > 0) {
@@ -381,7 +423,7 @@ export async function fetchGenerationRecord(
       if (opts.markInternal) init = opts.markInternal(init);
 
       const response = await fetch(url, init as RequestInit);
-      if (response.status === 404) continue; // not written yet — try once more
+      if (response.status === 404) continue; // not written yet — try again
       if (!response.ok) return null;
       const body = (await response.json()) as unknown;
       return normalizeGenerationRecord(generationId, body, requested, requestedModel, residency);

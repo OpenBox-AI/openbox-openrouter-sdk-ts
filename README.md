@@ -340,12 +340,22 @@ Two things follow from that, both deliberate:
 
 ### Timing, and what it costs you
 
-The generation record is written shortly *after* the response, not with it — a
-lookup at turn close returns 404. So collection runs in the background with
-backoff and is drained before the session closes: it never delays an answer,
-and it still lands inside the session (and therefore inside the attestation).
-A run whose last turn finishes at once may take a few extra seconds to close
-while the last record is fetched.
+The generation record is written *after* the response, not with it, and the
+lag can be long: a lookup at turn close returns 404, and on 2026-10-01 the
+record took 129s to appear. So collection runs in the background with backoff,
+for up to `provenanceTimeoutMs` (default 3 minutes,
+`OPENBOX_PROVENANCE_TIMEOUT_MS`), and is drained before the session closes.
+
+It has to be drained first. Core refuses events for a session that has already
+closed, so a record sent after `WorkflowCompleted` would never land in the
+session, or in its attestation. What it does not do is delay the answer:
+`getText()` and the streams resolve as soon as the answer is in hand, and while
+a record is still pending the session's close carries on in the background.
+`await openbox.close()` waits for it. Until then the session shows as running
+in the dashboard, and a short script takes as long to exit as OpenRouter takes
+to publish its last record. Lower the timeout if that matters more than the
+evidence: a record that is not there by the deadline is reported as unavailable
+and the session closes without it.
 
 It needs an OpenRouter key (`openrouterApiKey`, or `OPENROUTER_API_KEY`) and is
 inert without one. Turn it off with `attestRouting: false` or
@@ -538,6 +548,7 @@ createOpenBoxGovernance({
   instrumentFileIo: false,          // default
   spanConcurrency: 4,               // default; OPENBOX_SPAN_CONCURRENCY
   preflightRouting: true,           // default; OPENBOX_PREFLIGHT_ROUTING
+  provenanceTimeoutMs: 180_000,     // default; OPENBOX_PROVENANCE_TIMEOUT_MS
   captureRequestObjectBody: false,  // default — see below
   transport: myTransport,           // bring your own HTTP stack
 });

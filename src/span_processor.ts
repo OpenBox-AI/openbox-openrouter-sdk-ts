@@ -25,6 +25,7 @@ import {
   extractRequestedRouting,
   extractRequestedModel,
   provenanceAttributes,
+  DEFAULT_PROVENANCE_TIMEOUT_MS,
   fetchGenerationRecord,
   type RequestedRouting,
   type RoutingProvenance,
@@ -1234,9 +1235,16 @@ const _pendingRouting = new Map<
  */
 const _routingJobs = new Set<Promise<RoutingProvenance | null>>();
 
-let _routingAttestation: { enabled: boolean; apiKey: string | null; baseUrl?: string } = {
+let _routingAttestation: {
+  enabled: boolean;
+  apiKey: string | null;
+  baseUrl?: string;
+  /** Total time one generation record is waited for. */
+  timeoutMs: number;
+} = {
   enabled: true,
   apiKey: null,
+  timeoutMs: DEFAULT_PROVENANCE_TIMEOUT_MS,
 };
 
 /**
@@ -1248,12 +1256,19 @@ export function setRoutingAttestation(opts: {
   enabled?: boolean;
   apiKey?: string | null;
   baseUrl?: string;
+  timeoutMs?: number;
 }): void {
   _routingAttestation = {
     enabled: opts.enabled ?? _routingAttestation.enabled,
     apiKey: opts.apiKey ?? _routingAttestation.apiKey,
     baseUrl: opts.baseUrl ?? _routingAttestation.baseUrl,
+    timeoutMs: opts.timeoutMs ?? _routingAttestation.timeoutMs,
   };
+}
+
+/** Whether any generation record is still being collected. */
+export function routingAttestationsPending(): boolean {
+  return _routingJobs.size > 0;
 }
 
 export function routingAttestationEnabled(): boolean {
@@ -1448,6 +1463,7 @@ export function beginRoutingAttestation(
       {
         apiKey: _routingAttestation.apiKey!,
         baseUrl: _routingAttestation.baseUrl,
+        deadlineMs: _routingAttestation.timeoutMs,
         // Our own lookup must never be captured as one of the agent's spans.
         markInternal: (init) => ({ ...init, [OPENBOX_INTERNAL_REQUEST]: true }),
       },
@@ -1527,10 +1543,15 @@ export function beginRoutingAttestation(
 /**
  * Await outstanding provenance collection and return what was gathered.
  *
- * Called before a run closes, so the evidence is part of the session. Capped:
- * a record that never appears must not hold a run open.
+ * Called before a run closes, so the evidence is part of the session: Core
+ * refuses events for a session that is no longer pending, so a record sent
+ * after WorkflowCompleted would never land. Capped past the lookup deadline by
+ * enough for its last request and the span evaluation that follows, so a
+ * record that never appears cannot hold a run open for longer than that.
  */
-export async function drainRoutingAttestations(capMs = 12_000): Promise<RoutingProvenance[]> {
+export async function drainRoutingAttestations(
+  capMs = _routingAttestation.timeoutMs + 45_000,
+): Promise<RoutingProvenance[]> {
   if (_routingJobs.size === 0) return [];
   const jobs = Array.from(_routingJobs);
   const timeout = new Promise<Array<RoutingProvenance | null>>((resolve) => {
