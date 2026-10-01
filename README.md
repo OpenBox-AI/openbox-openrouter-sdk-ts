@@ -528,7 +528,7 @@ createOpenBoxGovernance({
   agentName: 'research-agent',
   sessionId: 'user-42',
   taskQueue: 'openrouter',          // default
-  onApiError: 'fail_open',          // or 'fail_closed'
+  onApiError: 'fail_open',          // or 'fail_closed' / 'fail_closed_destructive'
   governanceTimeout: 30,            // seconds
   toolTypeMap: { db_query: 'database' },
   skipToolTypes: new Set(['echo']),
@@ -549,9 +549,25 @@ createOpenBoxGovernance({
 ```
 
 `onApiError: 'fail_open'` (the default) lets the run continue when Core is
-unreachable. `'fail_closed'` aborts it. Auth failures (401/403) always
-hard-fail regardless — a revoked key must never silently degrade to "run
-ungoverned".
+unreachable. `'fail_closed'` aborts it. `'fail_closed_destructive'` sits
+between the two: during an outage it stops only operations that change
+something — a database write (`INSERT`, `UPDATE`, `DELETE`, DDL, Mongo
+`insertOne`/`updateMany`/`findOneAndUpdate`/…), a file write or append, or a
+non-idempotent HTTP request (`POST`, `PUT`, `PATCH`, `DELETE`). Reads,
+idempotent requests, and events that carry no span (workflow, tool and model
+lifecycle events) carry on.
+
+A request to an LLM provider — OpenRouter, or a provider called directly — is
+not treated as a write, even though it is a `POST`: under
+`'fail_closed_destructive'` a Core outage does not stop the agent talking to the
+model. Redis commands are not classified, so a Redis write also carries on.
+While an operation waits for a human decision, a failed approval poll counts as
+"still pending" under this mode (as under `'fail_open'`), so the held operation
+keeps waiting rather than running.
+
+Auth failures (401/403) always hard-fail regardless — a revoked key must never
+silently degrade to "run ungoverned". An unknown `onApiError` value is rejected
+when the governance is created.
 
 While an activity waits for a human decision, the SDK polls Core and keeps
 the process alive. To end a wait early, on shutdown for example, pass

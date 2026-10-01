@@ -40,6 +40,7 @@ import { GovernanceContractError, OpenBoxIdentityConfigError } from './errors';
 import { safeString } from './error-info';
 import { GovernanceClient, OnApiError, missingApprovalIds } from './client';
 import { ApprovalWaitAbortedError, sleepUnlessAborted } from './wait';
+import { failsClosedOnOutage } from './outage';
 import type { HITLConfig, Logger } from './config';
 import { rfc3339Now, stableSpanId, GovernanceVerdictResponse } from './types';
 import { GovernanceBlockedError, GovernanceHaltError, formatActivityRejectedMessage, verdictFromString } from './verdict';
@@ -389,8 +390,9 @@ async function evaluateHookSpan(
       throw err;
     }
     // Other soft failures (network/API) respect the configured policy —
-    // default fail_open so governance errors don't crash the model call.
-    if (err instanceof SoftGovernanceError && entry.onApiError === 'fail_closed') throw err;
+    // default fail_open so governance errors don't crash the model call;
+    // fail_closed_destructive stops only a write (see outage.ts).
+    if (err instanceof SoftGovernanceError && failsClosedOnOutage(entry.onApiError, payload)) throw err;
     if (!(err instanceof SoftGovernanceError)) {
       entry.logger.warn('span evaluate failed', err);
     }

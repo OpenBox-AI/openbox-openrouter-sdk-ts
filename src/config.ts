@@ -12,6 +12,7 @@
  */
 
 import { envNumber, envString } from './env';
+import type { OnApiError } from './outage';
 import type { OpenBoxCredentials, OpenBoxTransport } from './transport';
 
 export type DatabaseDriverName = 'pg' | 'mysql2' | 'mongodb' | 'redis' | 'ioredis';
@@ -43,7 +44,7 @@ export interface OpenBoxOpenRouterOptions extends Partial<OpenBoxCredentials> {
   sessionId?: string;
   /** task_queue field on all events. Defaults to "openrouter". */
   taskQueue?: string;
-  onApiError?: 'fail_open' | 'fail_closed';
+  onApiError?: OnApiError;
   /** Governance HTTP request timeout, in seconds. */
   governanceTimeout?: number;
   /** Maps tool name → tool_type tag sent on ToolStarted/ToolCompleted. */
@@ -125,7 +126,7 @@ export interface HITLConfig {
 
 export interface GovernanceConfig {
   taskQueue: string;
-  onApiError: 'fail_open' | 'fail_closed';
+  onApiError: OnApiError;
   governanceTimeout: number;
   toolTypeMap: Record<string, string>;
   skipToolTypes: Set<string>;
@@ -156,6 +157,19 @@ export interface GovernanceConfig {
  */
 export const DEFAULT_APPROVAL_MAX_WAIT_MS = 60 * 60 * 1000;
 
+const ON_API_ERROR_VALUES: readonly OnApiError[] = ['fail_open', 'fail_closed', 'fail_closed_destructive'];
+
+/** The outage policy, rejecting an unknown value rather than letting it read as fail_open. */
+function resolveOnApiError(value: OnApiError | undefined): OnApiError {
+  if (value === undefined) return 'fail_open';
+  if (!ON_API_ERROR_VALUES.includes(value)) {
+    throw new Error(
+      `onApiError must be 'fail_open', 'fail_closed' or 'fail_closed_destructive', got ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
+}
+
 /** Merge caller options with environment defaults into a resolved config. */
 export function mergeConfig(opts: OpenBoxOpenRouterOptions): GovernanceConfig {
   const databases =
@@ -164,7 +178,7 @@ export function mergeConfig(opts: OpenBoxOpenRouterOptions): GovernanceConfig {
 
   return {
     taskQueue: opts.taskQueue ?? 'openrouter',
-    onApiError: opts.onApiError ?? 'fail_open',
+    onApiError: resolveOnApiError(opts.onApiError),
     governanceTimeout: opts.governanceTimeout ?? 30.0,
     toolTypeMap: opts.toolTypeMap ?? {},
     skipToolTypes: opts.skipToolTypes ?? new Set(),
