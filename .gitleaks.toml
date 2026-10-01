@@ -1,2 +1,12 @@
 [extend]
 useDefault = true
+
+[allowlist]
+description = "Non-production test fixtures"
+paths = [
+  # Agent-identity golden fixtures from openbox-sdk-ts (synced from
+  # openbox-core/testdata/identity-v2): a non-production RSA keypair that
+  # carries an explicit non-production warning, and the fake API keys and
+  # assertions it signs. Allowlisted by directory so no global rule is loosened.
+  '''(^|/)test/fixtures/identity-v2/''',
+]
