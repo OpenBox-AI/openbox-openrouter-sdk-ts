@@ -309,7 +309,19 @@ describe('createOpenBoxGovernance — tools()', () => {
 
     const polls = transport.sent.filter((s) => s.path.endsWith('/approval'));
     expect(polls).toHaveLength(2);
-    expect(polls[0].body).toMatchObject({ activity_id: 'appr_1' });
+    // Core keys a pending approval on the three correlation ids, so the poll
+    // carries the tool activity's own ids — never the approval_id.
+    const started = transport
+      .events()
+      .find((e) => e.tool_name === 'payment' && e.status == null)!;
+    for (const poll of polls) {
+      expect(poll.body).toEqual({
+        workflow_id: started.workflow_id,
+        run_id: started.run_id,
+        activity_id: started.activity_id,
+      });
+    }
+    expect(JSON.stringify(polls)).not.toContain('appr_1');
   });
 
   it('leaves an async-generator tool untouched so streaming survives', async () => {
