@@ -1,10 +1,9 @@
 # Demo agent — OpenRouter + OpenBox
 
 A customer-support agent on `@openrouter/agent`, governed by OpenBox. It
-consumes the SDK as a **local dependency**
-(`"@openbox-ai/openbox-openrouter-governance": "file:.."`), so it exercises the
-real published package surface rather than
-reaching into `src/`.
+installs `@openbox-ai/openbox-openrouter-governance` **from npm**, the same way
+a consumer would, so it exercises the published package rather than reaching
+into `src/`.
 
 ## Setup
 
@@ -14,11 +13,13 @@ cp .env.example .env   # fill in your keys
 npm install
 ```
 
-`npm install` links the parent SDK. If you change SDK source, rebuild it so the
-demo picks it up:
+To try unreleased SDK changes, point the dependency at the parent checkout for
+as long as you need it — and put it back before committing, so the demo keeps
+testing what customers actually install:
 
 ```bash
 cd .. && npm run build && cd demo-agent
+npm install ../ --no-save
 ```
 
 ## Run
