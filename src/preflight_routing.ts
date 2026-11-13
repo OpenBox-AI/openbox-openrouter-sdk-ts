@@ -26,7 +26,9 @@
  *      rule, not a code review note.
  *   2. **Narrow the allowlist.** A `constrain` verdict may carry
  *      `patch.routing`, and the SDK applies it to the outgoing request. Only
- *      ever narrower: see `narrowRouting`.
+ *      ever narrower: see `narrowRouting`. Needs a Core whose policies still
+ *      emit a patch: fragmented policy rules on current Core never do, so
+ *      there a directive never arrives and the refusal stays a plain block.
  *   3. **Fail closed on a contradiction.** When the policy's allowlist and the
  *      caller's are disjoint there is nowhere left to send the prompt, and the
  *      call is refused rather than resolved in either party's favour.

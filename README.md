@@ -38,7 +38,9 @@ the session's signed root.
 npm install @openbox-ai/openbox-openrouter-governance @openrouter/agent
 ```
 
-Node 18.17+. `@openrouter/agent` is a peer dependency.
+Node 24.10+. `@openrouter/agent` is a peer dependency. Requests to OpenBox Core go
+through the OpenBox base SDK (`@openbox-ai/openbox-sdk-ts`), which keeps the
+wire contract, signing and agent identity in step with Core.
 
 ## Quickstart
 
@@ -50,9 +52,8 @@ const client = new OpenRouter({ apiKey: process.env.OPENROUTER_API_KEY });
 
 const openbox = createOpenBoxGovernance({
   agentName: 'research-agent',
-  // apiKey / openboxUrl / agentDid / agentPrivateKey also read from
-  // OPENBOX_API_KEY, OPENBOX_API_URL, OPENBOX_AGENT_DID,
-  // OPENBOX_AGENT_PRIVATE_KEY.
+  // apiKey / openboxUrl also read from OPENBOX_API_KEY, OPENBOX_API_URL;
+  // the agent's identity key from the env vars under "Agent identity".
 });
 
 const result = await openbox.callModel(callModel, client, {
@@ -113,6 +114,15 @@ arguments the caller never wrote is not an observability layer's decision.
 refund_order(A-1003, £12)  →  BLOCK   patch {"new_input": {"amount": 5, …}}
 refund_order(A-1003, £5)   →  ALLOW   tool executes
 ```
+
+> **On current OpenBox Core, a patch comes from a reviewer, not a policy.**
+> Since policies became fragmented policy rules, Core no longer puts a
+> policy-produced `patch` on an evaluate verdict. The one remaining source is a
+> reviewer's retry decision on a `REQUIRE_APPROVAL` activity, returned with the
+> BLOCK on the approval poll. Everything in this README that reads a patch off
+> an evaluate verdict — the routing and residency directives below — needs a
+> Core that still emits one (a self-hosted Rego policy). Against hosted Core
+> those directives never arrive, and the call is refused as a plain block.
 
 **With one exception: routing.** A directive that names where a prompt may go is
 applied by the SDK itself, because it can only ever remove destinations — it
@@ -547,6 +557,27 @@ createOpenBoxGovernance({
 unreachable. `'fail_closed'` aborts it. Auth failures (401/403) always
 hard-fail regardless — a revoked key must never silently degrade to "run
 ungoverned".
+
+### Agent identity
+
+Core routes each agent by how it proves its identity, so configure exactly
+one of these. The SDK settles on one API version for the agent and never retries
+a request on another:
+
+| Method | Set | Core API |
+|---|---|---|
+| unsigned | API key only | `/api/v1` |
+| OpenBox DID | `OPENBOX_AGENT_DID` + `OPENBOX_AGENT_PRIVATE_KEY` (base64 Ed25519 seed) | `/api/v1`, signed |
+| Okta AI agent | `OPENBOX_OKTA_AGENT_PRIVATE_KEY` (PKCS8 PEM, RSA ≥ 2048) | `/api/v2`, RS256 assertion |
+| Keycloak workload | `OPENBOX_WORKLOAD_PRIVATE_KEY` (PKCS8 PEM, RSA ≥ 2048) | `/api/v3`, workload token |
+
+An Okta key on its own is enough: Core supplies the rest of the identity from
+`GET /api/v2/auth/bootstrap`, and the SDK checks that the key matches the
+agent's selected credential before it sends anything. A workload key works the
+same way through `GET /api/v3/auth/bootstrap` and a Keycloak token exchange.
+Each setting can also be passed as an option (`agentDid`, `oktaAgentPrivateKey`,
+`workloadPrivateKey`, …). A blank env var counts as unset. Identity failures
+(a mismatched key, a refused bootstrap or token) hard-fail like a 401.
 
 `captureRequestObjectBody` is off for a reason: reading a body off a `Request`
 requires cloning it, which leaves the caller's object in a state their retry

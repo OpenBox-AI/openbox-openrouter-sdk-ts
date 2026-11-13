@@ -61,7 +61,9 @@ export class OpenBoxOpenRouterMiddleware {
       this._transport = options.transport;
     } else {
       const credentials = resolveCredentials(options);
-      this._transport = new FetchTransport(credentials);
+      this._transport = new FetchTransport(credentials, {
+        timeoutMs: this._config.governanceTimeout * 1000,
+      });
       // The credential's URL may be a self-hosted Core rather than the
       // default, so ignore it explicitly: HTTP calls to Core made while an
       // activity is registered must not be intercepted as hook spans and sent
