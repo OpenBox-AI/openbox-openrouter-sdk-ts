@@ -20,6 +20,7 @@ import { OpenRouter, callModel } from '@openrouter/agent';
 import {
   createOpenBoxGovernance,
   FetchTransport,
+  resolveCredentials,
   type OpenBoxRequestOptions,
   type OpenBoxTransport,
 } from '@openbox-ai/openbox-openrouter-governance';
@@ -222,12 +223,11 @@ async function runAgent(
   scenario: Scenario,
   emit: (event: UiEvent) => void,
 ): Promise<void> {
-  const credentials = {
+  // Every identity the SDK supports (DID, Okta, Keycloak workload) comes from
+  // the same OPENBOX_* variables the CLI agent reads.
+  const credentials = resolveCredentials({
     openboxUrl: process.env.OPENBOX_API_URL ?? 'http://localhost:8086',
-    apiKey: process.env.OPENBOX_API_KEY ?? '',
-    agentDid: process.env.OPENBOX_AGENT_DID,
-    agentPrivateKey: process.env.OPENBOX_AGENT_PRIVATE_KEY,
-  };
+  });
   const transport = new ObservingTransport(new FetchTransport(credentials), emit);
 
   const openbox = createOpenBoxGovernance({
