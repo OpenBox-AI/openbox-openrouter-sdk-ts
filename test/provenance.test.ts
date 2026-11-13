@@ -11,17 +11,19 @@
  * session's Merkle tree.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   extractRequestedModel,
   extractRequestedRouting,
+  fetchGenerationRecord,
   isModelHonored,
   isRoutingHonored,
   normalizeGenerationRecord,
   provenanceAttributes,
   readRequestedModel,
   readRequestedRouting,
+  recordFromResponse,
 } from '../src/provenance';
 
 describe('requested routing', () => {
@@ -377,5 +379,91 @@ describe('the failover trail', () => {
     expect(attrs['gen_ai.routing.providers_tried']).toEqual(['OpenAI']);
     expect((attrs['gen_ai.routing.attempts'] as unknown[]).length).toBe(2);
     expect((attrs['gen_ai.routing.attempts'] as { provider: unknown }[])[0].provider).toBeNull();
+  });
+});
+
+describe('looking up a late generation record', () => {
+  const record = { data: { provider_name: 'OpenAI', model: 'openai/gpt-4o-mini', data_region: 'global' } };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // fetch that answers 404 `misses` times, then the record.
+  function lateRecord(misses: number) {
+    let calls = 0;
+    const fetchMock = vi.fn(async () => {
+      calls += 1;
+      return calls <= misses
+        ? new Response('not found', { status: 404 })
+        : new Response(JSON.stringify(record), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('keeps looking past the opening backoff until the record appears', async () => {
+    // Three misses: two inside the opening backoff, one after it (a steady poll).
+    const fetchMock = lateRecord(3);
+    const out = await fetchGenerationRecord('gen-late', null, { apiKey: 'k', backoffMs: [1, 1], budgetMs: 5_000 }, null);
+    expect(out?.provider).toBe('OpenAI');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  }, 30_000);
+
+  it('gives up when the budget runs out', async () => {
+    const fetchMock = lateRecord(1_000);
+    const started = Date.now();
+    const out = await fetchGenerationRecord('gen-never', null, { apiKey: 'k', backoffMs: [1, 1], budgetMs: 300 }, null);
+    expect(out).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('provenance from the response when the record is late', () => {
+  it('reads a chat-completions reply', () => {
+    const p = recordFromResponse(
+      'gen-chat',
+      {
+        id: 'gen-chat',
+        provider: 'OpenAI',
+        model: 'openai/gpt-4o-mini',
+        choices: [{ finish_reason: 'tool_calls' }],
+        usage: { prompt_tokens: 339, completion_tokens: 19, cost: 0.0001, is_byok: false, cost_details: { upstream_inference_cost: 0 } },
+      },
+      { only: ['openai'] },
+    );
+    expect(p).toMatchObject({
+      provider: 'OpenAI',
+      model: 'openai/gpt-4o-mini',
+      tokensPrompt: 339,
+      tokensCompletion: 19,
+      totalCost: 0.0001,
+      upstreamCost: 0,
+      finishReason: 'tool_calls',
+      isByok: false,
+      honored: true,
+      dataRegion: null,
+      latencyMs: null,
+    });
+  });
+
+  it('reads a Responses API reply, which names no provider', () => {
+    const p = recordFromResponse(
+      'gen-resp',
+      { id: 'gen-resp', model: 'openai/gpt-4o-mini', status: 'completed', usage: { input_tokens: 10, output_tokens: 2, cost: 2.7e-6, is_byok: false } },
+      { only: ['openai'] },
+      'openai/gpt-4o-mini',
+      { regions: ['eu'] },
+    );
+    expect(p).toMatchObject({ provider: null, model: 'openai/gpt-4o-mini', tokensPrompt: 10, tokensCompletion: 2, modelHonored: true });
+    // Unknown is not a violation: no provider and no region means "not known", never "broken".
+    expect(p?.honored).toBeNull();
+    expect(p?.regionHonored).toBeNull();
+  });
+
+  it('returns null when the response names neither provider nor model', () => {
+    expect(recordFromResponse('gen-x', { id: 'gen-x', usage: {} }, null)).toBeNull();
+    expect(recordFromResponse('gen-x', null, null)).toBeNull();
   });
 });

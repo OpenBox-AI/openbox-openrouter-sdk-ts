@@ -325,11 +325,83 @@ export function normalizeGenerationRecord(
   };
 }
 
+/**
+ * How long one model call's generation record is looked for, from the first
+ * lookup. OpenRouter publishes the record after the response; measured at
+ * 8–12 s in November 2026 (it was under a second when this module was
+ * written), so the lookup must outlast that or every call loses its record.
+ */
+export const LOOKUP_BUDGET_MS = 15_000;
+
+/** Wait between lookups once the opening backoff schedule is used up. */
+const STEADY_POLL_MS = 2_000;
+
+/**
+ * What the model response itself says about the call, in the generation
+ * record's shape — sent when the record is not published in time.
+ *
+ * Reads both shapes OpenRouter returns: chat completions (`provider`,
+ * `usage.prompt_tokens`, `choices[].finish_reason`) and the Responses API the
+ * Agent SDK uses (`usage.input_tokens`, no provider). Region, latency and the
+ * attempt trail exist only in the record, so they stay unknown here, and an
+ * unknown value is never reported as a broken constraint.
+ */
+export function recordFromResponse(
+  generationId: string,
+  response: unknown,
+  requested: RequestedRouting | null,
+  requestedModel: string | null = null,
+  residency: DataResidency | null = null,
+): RoutingProvenance | null {
+  if (response == null || typeof response !== 'object') return null;
+  const root = response as Record<string, unknown>;
+  const provider = asString(root.provider);
+  const model = asString(root.model);
+  if (provider == null && model == null) return null;
+
+  const usage = (root.usage != null && typeof root.usage === 'object'
+    ? root.usage
+    : {}) as Record<string, unknown>;
+  const costDetails = (usage.cost_details != null && typeof usage.cost_details === 'object'
+    ? usage.cost_details
+    : {}) as Record<string, unknown>;
+  let finishReason: string | null = null;
+  if (Array.isArray(root.choices)) {
+    for (const choice of root.choices) {
+      if (choice != null && typeof choice === 'object') {
+        finishReason = asString((choice as Record<string, unknown>).finish_reason) ?? finishReason;
+      }
+    }
+  }
+
+  return normalizeGenerationRecord(
+    generationId,
+    {
+      provider_name: provider,
+      model,
+      total_cost: usage.cost,
+      upstream_inference_cost: costDetails.upstream_inference_cost,
+      tokens_prompt: usage.prompt_tokens ?? usage.input_tokens,
+      tokens_completion: usage.completion_tokens ?? usage.output_tokens,
+      finish_reason: finishReason,
+      is_byok: usage.is_byok,
+    },
+    requested,
+    requestedModel,
+    residency,
+  );
+}
+
 export interface FetchProvenanceOptions {
   apiKey: string;
   baseUrl?: string;
   timeoutMs?: number;
-  /** Backoff schedule between lookups; the record is written asynchronously. */
+  /** Total time to keep looking for the record. Defaults to `LOOKUP_BUDGET_MS`. */
+  budgetMs?: number;
+  /**
+   * Opening backoff schedule between lookups; the record is written
+   * asynchronously. After it, lookups repeat every 2 s until the budget ends.
+   */
   backoffMs?: number[];
   /** Marks our own request so the span processor does not trace it. */
   markInternal?: (init: Record<string, unknown>) => Record<string, unknown>;
@@ -339,8 +411,8 @@ export interface FetchProvenanceOptions {
  * Fetch the generation record for one model call.
  *
  * Returns null rather than throwing: provenance is evidence, and failing to
- * collect it must never fail the run that produced it. The record can lag the
- * response by a moment, so a 404 is retried once.
+ * collect it must never fail the run that produced it. The record lags the
+ * response, so a 404 is retried until the lookup budget runs out.
  */
 export async function fetchGenerationRecord(
   generationId: string,
@@ -353,24 +425,26 @@ export async function fetchGenerationRecord(
   const url = `${base}${GENERATION_PATH}?id=${encodeURIComponent(generationId)}`;
   const timeoutMs = opts.timeoutMs ?? 4_000;
 
-  // OpenRouter writes the generation record shortly after the response, not
-  // with it: measured 404 at +0ms and at +400ms, present a moment later. Since
-  // this runs in the background, it can afford to wait properly rather than
-  // give up and lose the evidence.
-  const backoffMs = opts.backoffMs ?? [300, 700, 1_500, 2_500, 4_000];
+  // OpenRouter writes the generation record after the response, not with it
+  // (see LOOKUP_BUDGET_MS). Since this runs in the background, it can afford
+  // to wait properly rather than give up and lose the evidence.
+  const deadline = Date.now() + (opts.budgetMs ?? LOOKUP_BUDGET_MS);
+  const backoffMs = opts.backoffMs ?? [300, 700, 1_500, 2_500];
 
-  for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     if (attempt > 0) {
+      const waitMs = backoffMs[attempt - 1] ?? STEADY_POLL_MS;
+      if (Date.now() + waitMs >= deadline) return null;
       // Deliberately NOT unref'd. These waits are what keeps the process alive
       // while evidence is still being collected — with them unref'd, Node
       // exited mid-collection and two of three model calls in a run lost their
-      // provenance. The schedule is bounded, so this cannot hold a process
+      // provenance. The budget is bounded, so this cannot hold a process
       // open indefinitely.
-      await new Promise((resolve) => setTimeout(resolve, backoffMs[attempt - 1]));
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, Math.max(deadline - Date.now(), 1)));
     (timer as unknown as { unref?: () => void }).unref?.();
     try {
       let init: Record<string, unknown> = {
@@ -381,7 +455,7 @@ export async function fetchGenerationRecord(
       if (opts.markInternal) init = opts.markInternal(init);
 
       const response = await fetch(url, init as RequestInit);
-      if (response.status === 404) continue; // not written yet — try once more
+      if (response.status === 404) continue; // not written yet — look again
       if (!response.ok) return null;
       const body = (await response.json()) as unknown;
       return normalizeGenerationRecord(generationId, body, requested, requestedModel, residency);

@@ -26,6 +26,8 @@ import {
   extractRequestedModel,
   provenanceAttributes,
   fetchGenerationRecord,
+  LOOKUP_BUDGET_MS,
+  recordFromResponse,
   type RequestedRouting,
   type RoutingProvenance,
 } from './provenance';
@@ -1218,6 +1220,8 @@ const _pendingRouting = new Map<
     generationId: string;
     requested: RequestedRouting | null;
     requestedModel: string | null;
+    /** The parsed model response, for when the generation record is late. */
+    response: Record<string, unknown>;
     entry: ActiveEntry;
   }
 >();
@@ -1225,8 +1229,8 @@ const _pendingRouting = new Map<
 /**
  * Provenance collection still in flight.
  *
- * OpenRouter writes the generation record a moment after the response — a
- * lookup at turn close returns 404 (measured: still 404 at +400ms). Waiting
+ * OpenRouter writes the generation record after the response — a lookup at
+ * turn close returns 404 (measured: 8–12 s before it appears). Waiting
  * for it inline would tax every turn with a retry loop for evidence nobody is
  * blocked on, so collection runs in the background with backoff and the run
  * drains it before closing. That keeps the record inside the session — and so
@@ -1385,8 +1389,9 @@ function recordRoutingCandidate(
 ): void {
   if (!routingAttestationEnabled() || responseBody == null) return;
   let generationId: string | null = null;
+  let parsed: Record<string, unknown>;
   try {
-    const parsed = JSON.parse(responseBody) as Record<string, unknown>;
+    parsed = JSON.parse(responseBody) as Record<string, unknown>;
     const id = parsed.id;
     // OpenRouter's generation ids are `gen-…`; anything else is a provider id
     // we cannot look up.
@@ -1401,6 +1406,7 @@ function recordRoutingCandidate(
     generationId,
     requested: extractRequestedRouting(requestBody),
     requestedModel: extractRequestedModel(requestBody),
+    response: parsed,
     entry,
   });
 }
@@ -1442,7 +1448,7 @@ export function beginRoutingAttestation(
     // The declared constraint is the fallback, not an override.
     const requested = pending.requested ?? declaredRouting ?? null;
     const requestedModel = pending.requestedModel ?? declaredModel ?? null;
-    const record = await fetchGenerationRecord(
+    const fromRecord = await fetchGenerationRecord(
       pending.generationId,
       requested,
       {
@@ -1454,11 +1460,18 @@ export function beginRoutingAttestation(
       requestedModel,
       residency ?? null,
     );
+    // OpenRouter publishes the record anywhere from seconds to over a minute
+    // after the response. When it is late, the response's own provider, model,
+    // usage and cost still go out; region, latency and the attempt trail are
+    // only in the record and stay unknown.
+    const record =
+      fromRecord ??
+      recordFromResponse(pending.generationId, pending.response, requested, requestedModel, residency ?? null);
     if (record == null) {
       // Evidence that could not be collected is worth surfacing: the run is
       // fine, but its provenance has a hole in it.
       pending.entry.logger?.warn?.(
-        `routing provenance unavailable for ${pending.generationId} — the generation record did not appear in time`,
+        `routing provenance unavailable for ${pending.generationId} — the generation record did not appear in time and the response names no model`,
       );
       return null;
     }
@@ -1528,9 +1541,12 @@ export function beginRoutingAttestation(
  * Await outstanding provenance collection and return what was gathered.
  *
  * Called before a run closes, so the evidence is part of the session. Capped:
- * a record that never appears must not hold a run open.
+ * a record that never appears must not hold a run open. The cap outlasts one
+ * lookup's budget, so the last model call's lookup can finish.
  */
-export async function drainRoutingAttestations(capMs = 12_000): Promise<RoutingProvenance[]> {
+export async function drainRoutingAttestations(
+  capMs = LOOKUP_BUDGET_MS + 5_000,
+): Promise<RoutingProvenance[]> {
   if (_routingJobs.size === 0) return [];
   const jobs = Array.from(_routingJobs);
   const timeout = new Promise<Array<RoutingProvenance | null>>((resolve) => {
